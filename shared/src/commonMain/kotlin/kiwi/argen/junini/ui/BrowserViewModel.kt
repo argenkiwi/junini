@@ -24,8 +24,15 @@ data class BrowserState(
     val currentUrl: Url? = null,
     val page: PageState = PageState.Idle,
     val isLoading: Boolean = false,
+    val canGoBack: Boolean = false,
+    val canGoForward: Boolean = false,
     /** A one-off message for a snackbar; cleared with [BrowserViewModel.noticeShown]. */
     val notice: String? = null,
+)
+
+data class HistoryEntry(
+    val url: Url,
+    val page: PageState,
 )
 
 sealed interface PageState {
@@ -37,10 +44,13 @@ sealed interface PageState {
 
 class BrowserViewModel(
     private val client: GeminiClient = GeminiClient(),
+    private val maxHistorySize: Int = 50,
 ) : ViewModel() {
     private val _state = MutableStateFlow(BrowserState())
     val state: StateFlow<BrowserState> = _state.asStateFlow()
 
+    private val backStack = mutableListOf<HistoryEntry>()
+    private val forwardStack = mutableListOf<HistoryEntry>()
     private var loadJob: Job? = null
 
     fun onUrlInputChange(value: String) = _state.update { it.copy(urlInput = value) }
@@ -64,10 +74,67 @@ class BrowserViewModel(
         }
     }
 
+    fun goBack() {
+        if (backStack.isEmpty()) {
+            if (_state.value.isLoading) {
+                loadJob?.cancel()
+                _state.update {
+                    it.copy(
+                        urlInput = it.currentUrl?.toString().orEmpty(),
+                        isLoading = false,
+                    )
+                }
+            }
+            return
+        }
+        loadJob?.cancel()
+        val currentUrl = _state.value.currentUrl
+        val currentPage = _state.value.page
+        if (currentUrl != null && currentPage !is PageState.Idle) {
+            forwardStack.add(HistoryEntry(currentUrl, currentPage))
+            if (forwardStack.size > maxHistorySize) forwardStack.removeFirst()
+        }
+        val previous = backStack.removeLast()
+        _state.update {
+            it.copy(
+                urlInput = previous.url.toString(),
+                currentUrl = previous.url,
+                page = previous.page,
+                isLoading = false,
+                canGoBack = backStack.isNotEmpty(),
+                canGoForward = forwardStack.isNotEmpty(),
+            )
+        }
+    }
+
+    fun goForward() {
+        if (forwardStack.isEmpty()) return
+        loadJob?.cancel()
+        val currentUrl = _state.value.currentUrl
+        val currentPage = _state.value.page
+        if (currentUrl != null && currentPage !is PageState.Idle) {
+            backStack.add(HistoryEntry(currentUrl, currentPage))
+            if (backStack.size > maxHistorySize) backStack.removeFirst()
+        }
+        val next = forwardStack.removeLast()
+        _state.update {
+            it.copy(
+                urlInput = next.url.toString(),
+                currentUrl = next.url,
+                page = next.page,
+                isLoading = false,
+                canGoBack = backStack.isNotEmpty(),
+                canGoForward = forwardStack.isNotEmpty(),
+            )
+        }
+    }
+
     fun noticeShown() = _state.update { it.copy(notice = null) }
 
     private fun load(url: Url) {
         loadJob?.cancel()
+        val previousUrl = _state.value.currentUrl
+        val previousPage = _state.value.page
         _state.update { it.copy(urlInput = url.toString(), isLoading = true) }
         loadJob = viewModelScope.launch {
             val result = try {
@@ -79,8 +146,20 @@ class BrowserViewModel(
                 url to PageState.Message("Couldn't load page", e.message ?: e::class.simpleName.orEmpty())
             }
             val (finalUrl, page) = result
+            if (previousUrl != null && previousPage !is PageState.Idle && previousUrl != finalUrl) {
+                backStack.add(HistoryEntry(previousUrl, previousPage))
+                if (backStack.size > maxHistorySize) backStack.removeFirst()
+                forwardStack.clear()
+            }
             _state.update {
-                it.copy(urlInput = finalUrl.toString(), currentUrl = finalUrl, page = page, isLoading = false)
+                it.copy(
+                    urlInput = finalUrl.toString(),
+                    currentUrl = finalUrl,
+                    page = page,
+                    isLoading = false,
+                    canGoBack = backStack.isNotEmpty(),
+                    canGoForward = forwardStack.isNotEmpty(),
+                )
             }
         }
     }
