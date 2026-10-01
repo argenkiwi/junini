@@ -3,13 +3,19 @@ package kiwi.argen.junini.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.ktor.http.Url
+import kiwi.argen.junini.gemini.CertificateMismatchException
 import kiwi.argen.junini.gemini.GeminiClient
 import kiwi.argen.junini.gemini.GeminiResponse
 import kiwi.argen.junini.gemini.GemtextLine
+import kiwi.argen.junini.gemini.InMemoryKnownHostsStore
+import kiwi.argen.junini.gemini.KnownHosts
+import kiwi.argen.junini.gemini.KnownHostsStore
+import kiwi.argen.junini.gemini.ServerCertificate
 import kiwi.argen.junini.gemini.decodeText
 import kiwi.argen.junini.gemini.isGemini
 import kiwi.argen.junini.gemini.parseGemtext
 import kiwi.argen.junini.gemini.parseUserInput
+import kiwi.argen.junini.gemini.platformGeminiTransport
 import kiwi.argen.junini.gemini.resolveUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -40,10 +46,21 @@ sealed interface PageState {
     data class Gemtext(val url: Url, val lines: List<GemtextLine>) : PageState
     data class PlainText(val url: Url, val text: String) : PageState
     data class Message(val title: String, val detail: String) : PageState
+
+    /** [host] presented a certificate that doesn't match the one pinned on an earlier visit. */
+    data class CertificateChanged(
+        val url: Url,
+        val host: String,
+        val port: Int,
+        val pinned: ServerCertificate,
+        val presented: ServerCertificate,
+    ) : PageState
 }
 
 class BrowserViewModel(
-    private val client: GeminiClient = GeminiClient(),
+    knownHostsStore: KnownHostsStore = InMemoryKnownHostsStore(),
+    private val knownHosts: KnownHosts = KnownHosts(knownHostsStore),
+    private val client: GeminiClient = GeminiClient(platformGeminiTransport(knownHosts)),
     private val maxHistorySize: Int = 50,
 ) : ViewModel() {
     private val _state = MutableStateFlow(BrowserState())
@@ -131,6 +148,23 @@ class BrowserViewModel(
 
     fun noticeShown() = _state.update { it.copy(notice = null) }
 
+    /** Pins the new certificate shown by a [PageState.CertificateChanged] page and loads the page again. */
+    fun trustNewCertificate() {
+        val page = _state.value.page as? PageState.CertificateChanged ?: return
+        knownHosts.trust(page.host, page.port, page.presented)
+        load(page.url)
+    }
+
+    /** Leaves a [PageState.CertificateChanged] page without trusting the new certificate. */
+    fun cancelCertificateChange() {
+        if (_state.value.page !is PageState.CertificateChanged) return
+        if (backStack.isNotEmpty()) {
+            goBack()
+        } else {
+            _state.update { it.copy(urlInput = "", currentUrl = null, page = PageState.Idle) }
+        }
+    }
+
     private fun load(url: Url) {
         loadJob?.cancel()
         val previousUrl = _state.value.currentUrl
@@ -142,11 +176,15 @@ class BrowserViewModel(
                 response.url to response.toPageState()
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: CertificateMismatchException) {
+                url to PageState.CertificateChanged(url, e.host, e.port, e.pinned, e.presented)
             } catch (e: Exception) {
                 url to PageState.Message("Couldn't load page", e.message ?: e::class.simpleName.orEmpty())
             }
             val (finalUrl, page) = result
-            if (previousUrl != null && previousPage !is PageState.Idle && previousUrl != finalUrl) {
+            // A certificate prompt isn't a page worth going back to.
+            val keepPrevious = previousPage !is PageState.Idle && previousPage !is PageState.CertificateChanged
+            if (previousUrl != null && keepPrevious && previousUrl != finalUrl) {
                 backStack.add(HistoryEntry(previousUrl, previousPage))
                 if (backStack.size > maxHistorySize) backStack.removeFirst()
                 forwardStack.clear()

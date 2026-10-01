@@ -8,8 +8,10 @@ interface GeminiTransport {
 /**
  * The transport for the current platform. Only the JVM targets (Android, Desktop) have one:
  * Ktor can't do TLS on Native, and browsers can't open raw TCP sockets.
+ *
+ * Server certificates are checked against [knownHosts] before the request is sent.
  */
-expect fun platformGeminiTransport(): GeminiTransport
+expect fun platformGeminiTransport(knownHosts: KnownHosts): GeminiTransport
 
 internal object UnsupportedGeminiTransport : GeminiTransport {
     override suspend fun fetch(host: String, port: Int, request: String): ByteArray =

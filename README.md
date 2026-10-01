@@ -21,6 +21,7 @@ Junini is a lightweight browser for [Geminispace](https://geminiprotocol.net/), 
 - **Simple navigation**: a bottom URL bar that hides as you scroll down and comes back when you scroll up, plus back and forward buttons (and the system back gesture on Android).
 - **Forgiving input**: type `geminiprotocol.net` and Junini adds the `gemini://` for you.
 - **Spec-aware networking**: follows redirects (with loop detection), resolves relative links per RFC 3986, and turns status codes into readable messages.
+- **TOFU certificate pinning**: the first certificate a capsule presents is trusted and remembered. If it later changes before expiring, Junini stops before sending the request and asks whether to trust the new certificate.
 - **One codebase**: protocol, state and UI are all shared in Kotlin.
 
 ## Platform support
@@ -34,8 +35,7 @@ Junini is a lightweight browser for [Geminispace](https://geminiprotocol.net/), 
 
 Gemini runs TLS over raw TCP on port 1965. Ktor's TLS sockets aren't available on Kotlin/Native yet, and browsers can't open raw TCP sockets, so for now the iOS and Web apps show a "not supported on this platform yet" message.
 
-> [!WARNING]
-> Junini currently **accepts every server certificate**. [TOFU](https://en.wikipedia.org/wiki/Trust_on_first_use) certificate pinning is planned. Until it lands, don't trust Junini with anything sensitive.
+Most Gemini capsules use self-signed certificates, so Junini uses [TOFU](https://en.wikipedia.org/wiki/Trust_on_first_use) (trust on first use) rather than CA validation, as the spec recommends. It pins the SHA-256 fingerprint of each host's certificate in a `known_hosts` file: `~/.junini/known_hosts` on Desktop, and in the app's private storage on Android. An expired pin is replaced without asking.
 
 ### Not yet supported
 
@@ -78,7 +78,7 @@ junini/
 ├── shared/        # Nearly all the code, UI included
 │   └── src/
 │       ├── commonMain/     # gemini/ (protocol) and ui/ (Compose screens + view model)
-│       ├── jvmSharedMain/  # Ktor TLS socket transport, shared by Android and Desktop
+│       ├── jvmSharedMain/  # Ktor TLS socket transport and file-backed known_hosts, shared by Android and Desktop
 │       ├── iosMain/        # iOS entry point and stub transport
 │       ├── webMain/        # Stub transport for JS and Wasm
 │       └── commonTest/     # Tests, run against a fake transport
@@ -90,9 +90,9 @@ junini/
 
 The app modules are thin shells that host the shared `App()` composable. In `shared`:
 
-- `gemini/` holds the protocol: URL normalisation and resolution (`GeminiUrl`), header and MIME parsing (`GeminiProtocol`), redirect handling (`GeminiClient`) and the gemtext parser (`Gemtext`).
-- `ui/` holds `BrowserViewModel`, which manages loading and history, and the Compose UI (`BrowserScreen`, `GemtextView`).
-- Networking sits behind `expect fun platformGeminiTransport()`, so adding a platform only takes a new transport.
+- `gemini/` holds the protocol: URL normalisation and resolution (`GeminiUrl`), header and MIME parsing (`GeminiProtocol`), redirect handling (`GeminiClient`), TOFU certificate pinning (`KnownHosts`) and the gemtext parser (`Gemtext`).
+- `ui/` holds `BrowserViewModel`, which manages loading and history, and the Compose UI (`BrowserScreen`, `GemtextView`, `CertificateChangedView`).
+- Networking sits behind `expect fun platformGeminiTransport(knownHosts)`, so adding a platform only takes a new transport.
 
 ## Testing
 

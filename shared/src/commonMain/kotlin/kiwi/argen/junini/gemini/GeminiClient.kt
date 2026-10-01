@@ -3,7 +3,7 @@ package kiwi.argen.junini.gemini
 import io.ktor.http.Url
 
 class GeminiClient(
-    private val transport: GeminiTransport = platformGeminiTransport(),
+    private val transport: GeminiTransport,
     private val maxRedirects: Int = 5,
 ) {
     /**
