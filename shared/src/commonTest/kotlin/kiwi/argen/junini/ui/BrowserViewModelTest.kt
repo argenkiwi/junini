@@ -7,6 +7,8 @@ import kiwi.argen.junini.gemini.InMemoryKnownHostsStore
 import kiwi.argen.junini.gemini.KnownHosts
 import kiwi.argen.junini.gemini.KnownHostsStore
 import kiwi.argen.junini.gemini.ServerCertificate
+import kiwi.argen.junini.history.HistoryStore
+import kiwi.argen.junini.history.InMemoryHistoryStore
 import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -16,6 +18,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -345,6 +348,134 @@ class BrowserViewModelTest {
             assertEquals(original, store.get("example.org", 1965))
             assertEquals(Url("gemini://example.org/a"), vm.state.value.currentUrl)
             assertIs<PageState.Gemtext>(vm.state.value.page)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    private val historyResponses = mapOf(
+        "gemini://example.org/a" to "20 text/gemini\r\n# Page A",
+        "gemini://example.org/text" to "20 text/plain\r\nHello",
+        "gemini://example.org/moved" to "31 /a\r\n",
+        "gemini://example.org/away" to "30 https://example.com/\r\n",
+        "gemini://example.org/input" to "10 Your name?\r\n",
+        "gemini://example.org/image" to "20 image/png\r\n\u0089PNG",
+        "gemini://example.org/broken" to "garbage without a header line",
+    )
+
+    private fun historyViewModel(store: HistoryStore = InMemoryHistoryStore()) =
+        BrowserViewModel(client = GeminiClient(FakeTransport(historyResponses)), historyStore = store)
+
+    private fun TestScope.recordedAfterOpening(vararg urls: String): Set<String> {
+        val store = InMemoryHistoryStore()
+        val vm = historyViewModel(store)
+        urls.forEach {
+            vm.open(it)
+            advanceUntilIdle()
+        }
+        return store.all().map { it.url }.toSet()
+    }
+
+    @Test
+    fun recordsPagesThatRendered() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            assertEquals(
+                setOf("gemini://example.org/a", "gemini://example.org/text"),
+                recordedAfterOpening("gemini://example.org/a", "example.org/text"),
+            )
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun redirectsRecordTheFinalUrl() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            assertEquals(setOf("gemini://example.org/a"), recordedAfterOpening("gemini://example.org/moved"))
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun doesNotRecordPagesThatDidNotRender() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            assertEquals(
+                emptySet(),
+                recordedAfterOpening(
+                    "gemini://example.org/missing",
+                    "gemini://example.org/away",
+                    "gemini://example.org/input",
+                    "gemini://example.org/image",
+                    "gemini://example.org/broken",
+                    "https://example.org/",
+                    "",
+                ),
+            )
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun typingSuggestsVisitedPagesUntilTheNextLoad() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val vm = historyViewModel()
+            vm.open("gemini://example.org/a")
+            advanceUntilIdle()
+
+            vm.onUrlInputChange("exa")
+            assertEquals(listOf("gemini://example.org/a"), vm.state.value.suggestions)
+
+            vm.pickSuggestion("gemini://example.org/a")
+            assertEquals(emptyList(), vm.state.value.suggestions)
+            advanceUntilIdle()
+            assertEquals(Url("gemini://example.org/a"), vm.state.value.currentUrl)
+            assertIs<PageState.Gemtext>(vm.state.value.page)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun dismissingHidesSuggestions() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val vm = historyViewModel()
+            vm.open("gemini://example.org/a")
+            advanceUntilIdle()
+            vm.onUrlInputChange("exa")
+
+            vm.dismissSuggestions()
+
+            assertEquals(emptyList(), vm.state.value.suggestions)
+            assertEquals("exa", vm.state.value.urlInput)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun clearingHistoryRemovesSuggestions() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val store = InMemoryHistoryStore()
+            val vm = historyViewModel(store)
+            vm.open("gemini://example.org/a")
+            advanceUntilIdle()
+            vm.onUrlInputChange("exa")
+
+            vm.clearHistory()
+
+            assertEquals(emptyList(), store.all())
+            assertEquals(emptyList(), vm.state.value.suggestions)
+            assertEquals("History cleared", vm.state.value.notice)
+            vm.onUrlInputChange("exam")
+            assertEquals(emptyList(), vm.state.value.suggestions)
         } finally {
             Dispatchers.resetMain()
         }

@@ -10,14 +10,22 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kiwi.argen.junini.gemini.InMemoryKnownHostsStore
 import kiwi.argen.junini.gemini.KnownHostsStore
+import kiwi.argen.junini.history.HistoryStore
+import kiwi.argen.junini.history.InMemoryHistoryStore
 import kiwi.argen.junini.ui.BrowserScreen
 import kiwi.argen.junini.ui.BrowserViewModel
 
-/** [knownHostsStore] holds pinned server certificates; platforms with networking pass a persistent one. */
+/**
+ * [knownHostsStore] holds pinned server certificates and [historyStore] the visited pages behind URL
+ * suggestions; platforms with networking pass persistent ones.
+ */
 @Composable
 @Preview
-fun App(knownHostsStore: KnownHostsStore = remember { InMemoryKnownHostsStore() }) {
+fun App(
+    knownHostsStore: KnownHostsStore = remember { InMemoryKnownHostsStore() },
+    historyStore: HistoryStore = remember { InMemoryHistoryStore() },
+) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
-        BrowserScreen(viewModel { BrowserViewModel(knownHostsStore) })
+        BrowserScreen(viewModel { BrowserViewModel(knownHostsStore, historyStore = historyStore) })
     }
 }

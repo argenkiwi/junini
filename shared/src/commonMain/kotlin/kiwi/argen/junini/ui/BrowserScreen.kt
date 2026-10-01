@@ -1,6 +1,9 @@
 package kiwi.argen.junini.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +17,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.BottomAppBarDefaults
 import androidx.compose.material3.BottomAppBarScrollBehavior
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -22,6 +27,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -29,11 +35,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isAltPressed
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -45,12 +57,14 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import junini.shared.generated.resources.Res
 import junini.shared.generated.resources.ic_arrow_back
 import junini.shared.generated.resources.ic_arrow_forward
+import junini.shared.generated.resources.ic_more_vert
 import org.jetbrains.compose.resources.painterResource
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -69,8 +83,17 @@ fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }
             viewModel.noticeShown()
         }
     }
-    // Show the bar again whenever a new page arrives.
+    // Show the bar again whenever a new page arrives, and keep it in place under the suggestions.
     LaunchedEffect(state.page) { scrollBehavior.state.heightOffset = 0f }
+    val showSuggestions = state.suggestions.isNotEmpty()
+    LaunchedEffect(showSuggestions) { if (showSuggestions) scrollBehavior.state.heightOffset = 0f }
+    // -1 means nothing is highlighted, so Enter submits whatever was typed.
+    var highlighted by remember(state.suggestions) { mutableIntStateOf(-1) }
+    val focusManager = LocalFocusManager.current
+    val pickSuggestion = { url: String ->
+        focusManager.clearFocus()
+        viewModel.pickSuggestion(url)
+    }
 
     Scaffold(
         modifier = Modifier
@@ -111,6 +134,32 @@ fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }
                 onBack = viewModel::goBack,
                 canGoForward = state.canGoForward,
                 onForward = viewModel::goForward,
+                onClearHistory = viewModel::clearHistory,
+                onFocusLost = viewModel::dismissSuggestions,
+                // The best match sits right above the field, so Up moves away from it.
+                onSuggestionKey = { event ->
+                    if (!showSuggestions || event.type != KeyEventType.KeyDown) return@UrlBottomBar false
+                    when (event.key) {
+                        Key.DirectionUp -> {
+                            highlighted = (highlighted + 1).coerceAtMost(state.suggestions.lastIndex)
+                            true
+                        }
+                        Key.DirectionDown -> {
+                            highlighted = (highlighted - 1).coerceAtLeast(-1)
+                            true
+                        }
+                        Key.Enter, Key.NumPadEnter -> {
+                            val url = state.suggestions.getOrNull(highlighted) ?: return@UrlBottomBar false
+                            pickSuggestion(url)
+                            true
+                        }
+                        Key.Escape -> {
+                            viewModel.dismissSuggestions()
+                            true
+                        }
+                        else -> false
+                    }
+                },
                 scrollBehavior = scrollBehavior,
             )
         },
@@ -136,6 +185,53 @@ fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }
                         .align(Alignment.TopCenter),
                 )
             }
+            // Drawn over the page rather than in a popup, so it always opens upwards from the bar,
+            // follows it and the IME, and never takes focus from the URL field.
+            if (showSuggestions) {
+                SuggestionList(
+                    suggestions = state.suggestions,
+                    highlighted = highlighted,
+                    onPick = pickSuggestion,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = innerPadding.calculateBottomPadding()),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionList(
+    suggestions: List<String>,
+    highlighted: Int,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 3.dp,
+        shadowElevation = 3.dp,
+    ) {
+        Column(Modifier.padding(vertical = 4.dp)) {
+            // Best match last, so it's the one closest to the URL field.
+            suggestions.asReversed().forEachIndexed { reversedIndex, url ->
+                val index = suggestions.lastIndex - reversedIndex
+                Text(
+                    text = url,
+                    style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (index == highlighted) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent)
+                        // Clicking mustn't pull focus from the URL field, which would dismiss the list mid-click.
+                        .focusProperties { canFocus = false }
+                        .clickable { onPick(url) }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
         }
     }
 }
@@ -150,9 +246,13 @@ private fun UrlBottomBar(
     onBack: () -> Unit,
     canGoForward: Boolean,
     onForward: () -> Unit,
+    onClearHistory: () -> Unit,
+    onFocusLost: () -> Unit,
+    onSuggestionKey: (KeyEvent) -> Boolean,
     scrollBehavior: BottomAppBarScrollBehavior,
 ) {
     val focusManager = LocalFocusManager.current
+    var menuOpen by remember { mutableStateOf(false) }
     val submit = {
         focusManager.clearFocus()
         onSubmit()
@@ -193,7 +293,9 @@ private fun UrlBottomBar(
                 onValueChange = onValueChange,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 4.dp, end = 8.dp),
+                    .padding(start = 4.dp)
+                    .onFocusChanged { if (!it.isFocused) onFocusLost() }
+                    .onPreviewKeyEvent(onSuggestionKey),
                 textStyle = MaterialTheme.typography.bodyLarge,
                 placeholder = { Text("gemini://") },
                 singleLine = true,
@@ -210,6 +312,23 @@ private fun UrlBottomBar(
                 ),
                 keyboardActions = KeyboardActions(onGo = { submit() }),
             )
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        painter = painterResource(Res.drawable.ic_more_vert),
+                        contentDescription = "More options",
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Clear history") },
+                        onClick = {
+                            menuOpen = false
+                            onClearHistory()
+                        },
+                    )
+                }
+            }
         }
     }
 }

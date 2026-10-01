@@ -4,15 +4,18 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import java.io.File
 import kiwi.argen.junini.gemini.FileKnownHostsStore
+import kiwi.argen.junini.history.FileHistoryStore
 
 fun main() {
-    val knownHostsStore = FileKnownHostsStore(File(System.getProperty("user.home"), ".junini/known_hosts"))
+    val dataDir = File(System.getProperty("user.home"), ".junini")
+    val knownHostsStore = FileKnownHostsStore(File(dataDir, "known_hosts"))
+    val historyStore = FileHistoryStore(File(dataDir, "history"))
     application {
         Window(
             onCloseRequest = ::exitApplication,
             title = "Junini",
         ) {
-            App(knownHostsStore)
+            App(knownHostsStore, historyStore)
         }
     }
 }

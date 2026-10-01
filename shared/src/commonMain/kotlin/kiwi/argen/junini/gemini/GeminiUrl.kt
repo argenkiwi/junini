@@ -34,6 +34,16 @@ val Url.isGemini: Boolean get() = protocol.name.equals(GEMINI_SCHEME, ignoreCase
 /** The port to connect to: the one in the URL, or Gemini's default when none is given. */
 val Url.geminiPort: Int get() = specifiedPort.takeIf { it != DEFAULT_PORT } ?: GEMINI_DEFAULT_PORT
 
+/**
+ * A canonical form for comparing URLs: lowercase host, no explicit default port, no fragment and a
+ * root path, so `gemini://Host:1965` and `gemini://host/#top` both become `gemini://host/`.
+ */
+fun Url.normalized(): String = URLBuilder(this).apply {
+    host = host.lowercase()
+    if (isGemini && port == GEMINI_DEFAULT_PORT) port = DEFAULT_PORT
+    fragment = ""
+}.build().withRootPath().toString()
+
 /** `gemini://host` and `gemini://host/` are the same resource; always send the latter. */
 private fun Url.withRootPath(): Url =
     if (isGemini && encodedPath.isEmpty()) URLBuilder(this).apply { encodedPath = "/" }.build() else this

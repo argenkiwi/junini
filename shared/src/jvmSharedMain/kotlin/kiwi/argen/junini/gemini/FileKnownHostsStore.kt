@@ -1,8 +1,7 @@
 package kiwi.argen.junini.gemini
 
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import kiwi.argen.junini.writeTextAtomically
 import kotlin.time.Instant
 
 /**
@@ -34,15 +33,9 @@ class FileKnownHostsStore(private val file: File) : KnownHostsStore {
         }
     }.toMutableMap().also { entries = it }
 
-    private fun save(entries: Map<Pair<String, Int>, ServerCertificate>) {
-        file.parentFile?.mkdirs()
-        // Written to a temporary file first so a crash mid-write can't lose every pin.
-        val temp = File(file.path + ".tmp")
-        temp.writeText(
-            entries.entries.joinToString(separator = "") { (key, cert) ->
-                "${key.first} ${key.second} ${cert.fingerprint} ${cert.notAfter.epochSeconds}\n"
-            },
-        )
-        Files.move(temp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    }
+    private fun save(entries: Map<Pair<String, Int>, ServerCertificate>) = file.writeTextAtomically(
+        entries.entries.joinToString(separator = "") { (key, cert) ->
+            "${key.first} ${key.second} ${cert.fingerprint} ${cert.notAfter.epochSeconds}\n"
+        },
+    )
 }

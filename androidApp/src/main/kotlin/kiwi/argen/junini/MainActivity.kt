@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import java.io.File
 import kiwi.argen.junini.gemini.FileKnownHostsStore
+import kiwi.argen.junini.history.FileHistoryStore
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -15,8 +16,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val knownHostsStore = FileKnownHostsStore(File(filesDir, "known_hosts"))
+        val historyStore = FileHistoryStore(File(filesDir, "history"))
         setContent {
-            App(knownHostsStore)
+            App(knownHostsStore, historyStore)
         }
     }
 }

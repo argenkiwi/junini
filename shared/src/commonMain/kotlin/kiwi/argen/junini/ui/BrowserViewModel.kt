@@ -17,6 +17,9 @@ import kiwi.argen.junini.gemini.parseGemtext
 import kiwi.argen.junini.gemini.parseUserInput
 import kiwi.argen.junini.gemini.platformGeminiTransport
 import kiwi.argen.junini.gemini.resolveUrl
+import kiwi.argen.junini.history.BrowsingHistory
+import kiwi.argen.junini.history.HistoryStore
+import kiwi.argen.junini.history.InMemoryHistoryStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +35,8 @@ data class BrowserState(
     val isLoading: Boolean = false,
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
+    /** Visited URLs matching [urlInput] while the user types, best match first. */
+    val suggestions: List<String> = emptyList(),
     /** A one-off message for a snackbar; cleared with [BrowserViewModel.noticeShown]. */
     val notice: String? = null,
 )
@@ -62,6 +67,8 @@ class BrowserViewModel(
     private val knownHosts: KnownHosts = KnownHosts(knownHostsStore),
     private val client: GeminiClient = GeminiClient(platformGeminiTransport(knownHosts)),
     private val maxHistorySize: Int = 50,
+    historyStore: HistoryStore = InMemoryHistoryStore(),
+    private val history: BrowsingHistory = BrowsingHistory(historyStore),
 ) : ViewModel() {
     private val _state = MutableStateFlow(BrowserState())
     val state: StateFlow<BrowserState> = _state.asStateFlow()
@@ -70,7 +77,19 @@ class BrowserViewModel(
     private val forwardStack = mutableListOf<HistoryEntry>()
     private var loadJob: Job? = null
 
-    fun onUrlInputChange(value: String) = _state.update { it.copy(urlInput = value) }
+    fun onUrlInputChange(value: String) =
+        _state.update { it.copy(urlInput = value, suggestions = history.suggest(value)) }
+
+    fun pickSuggestion(url: String) {
+        parseUserInput(url)?.let(::load)
+    }
+
+    fun dismissSuggestions() = _state.update { it.copy(suggestions = emptyList()) }
+
+    fun clearHistory() {
+        history.clear()
+        _state.update { it.copy(suggestions = emptyList(), notice = "History cleared") }
+    }
 
     fun submitUrlInput() {
         val url = parseUserInput(_state.value.urlInput)
@@ -98,6 +117,7 @@ class BrowserViewModel(
                 _state.update {
                     it.copy(
                         urlInput = it.currentUrl?.toString().orEmpty(),
+                        suggestions = emptyList(),
                         isLoading = false,
                     )
                 }
@@ -115,6 +135,7 @@ class BrowserViewModel(
         _state.update {
             it.copy(
                 urlInput = previous.url.toString(),
+                suggestions = emptyList(),
                 currentUrl = previous.url,
                 page = previous.page,
                 isLoading = false,
@@ -137,6 +158,7 @@ class BrowserViewModel(
         _state.update {
             it.copy(
                 urlInput = next.url.toString(),
+                suggestions = emptyList(),
                 currentUrl = next.url,
                 page = next.page,
                 isLoading = false,
@@ -161,7 +183,7 @@ class BrowserViewModel(
         if (backStack.isNotEmpty()) {
             goBack()
         } else {
-            _state.update { it.copy(urlInput = "", currentUrl = null, page = PageState.Idle) }
+            _state.update { it.copy(urlInput = "", suggestions = emptyList(), currentUrl = null, page = PageState.Idle) }
         }
     }
 
@@ -169,7 +191,7 @@ class BrowserViewModel(
         loadJob?.cancel()
         val previousUrl = _state.value.currentUrl
         val previousPage = _state.value.page
-        _state.update { it.copy(urlInput = url.toString(), isLoading = true) }
+        _state.update { it.copy(urlInput = url.toString(), suggestions = emptyList(), isLoading = true) }
         loadJob = viewModelScope.launch {
             val result = try {
                 val response = client.fetch(url)
@@ -182,6 +204,8 @@ class BrowserViewModel(
                 url to PageState.Message("Couldn't load page", e.message ?: e::class.simpleName.orEmpty())
             }
             val (finalUrl, page) = result
+            // Only pages that actually rendered are worth suggesting again.
+            if (page is PageState.Gemtext || page is PageState.PlainText) history.record(finalUrl)
             // A certificate prompt isn't a page worth going back to.
             val keepPrevious = previousPage !is PageState.Idle && previousPage !is PageState.CertificateChanged
             if (previousUrl != null && keepPrevious && previousUrl != finalUrl) {
