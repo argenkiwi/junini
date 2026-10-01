@@ -122,6 +122,8 @@ fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }
                 PageContent(
                     page = state.page,
                     onLinkClick = viewModel::onLinkClick,
+                    onTrustCertificate = viewModel::trustNewCertificate,
+                    onCancelCertificate = viewModel::cancelCertificateChange,
                     listState = rememberLazyListState(),
                     contentPadding = innerPadding,
                 )
@@ -216,6 +218,8 @@ private fun UrlBottomBar(
 private fun PageContent(
     page: PageState,
     onLinkClick: (String) -> Unit,
+    onTrustCertificate: () -> Unit,
+    onCancelCertificate: () -> Unit,
     listState: LazyListState,
     contentPadding: PaddingValues,
 ) {
@@ -228,6 +232,12 @@ private fun PageContent(
         is PageState.Message -> MessageView(page.title, page.detail, contentPadding)
         is PageState.Gemtext -> GemtextView(page.lines, onLinkClick, listState, contentPadding)
         is PageState.PlainText -> PlainTextView(page.text, listState, contentPadding)
+        is PageState.CertificateChanged -> CertificateChangedView(
+            page = page,
+            onTrust = onTrustCertificate,
+            onCancel = onCancelCertificate,
+            contentPadding = contentPadding,
+        )
     }
 }
 

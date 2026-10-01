@@ -8,7 +8,7 @@ const val MAX_REQUEST_URL_BYTES = 1024
 /** Status line limit: two digits, a space, up to 1024 bytes of meta, then CRLF. */
 private const val MAX_HEADER_BYTES = 2 + 1 + 1024 + 2
 
-class GeminiException(message: String) : Exception(message)
+open class GeminiException(message: String) : Exception(message)
 
 sealed interface GeminiResponse {
     val url: Url
