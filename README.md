@@ -19,6 +19,7 @@ Junini is a lightweight browser for [Geminispace](https://geminiprotocol.net/), 
 - **Gemtext rendering**: headings, links, lists, quotes and preformatted blocks.
 - **Plain text** support for `text/*` responses.
 - **Simple navigation**: a bottom URL bar that hides as you scroll down and comes back when you scroll up, plus back and forward buttons (and the system back gesture on Android).
+- **Server input**: when a capsule asks a question (`10`) or for a secret (`11`), a bottom sheet with a text field sends the answer back; secrets are masked.
 - **Forgiving input**: type `geminiprotocol.net` and Junini adds the `gemini://` for you.
 - **Spec-aware networking**: follows redirects (with loop detection), resolves relative links per RFC 3986, and turns status codes into readable messages.
 - **TOFU certificate pinning**: the first certificate a capsule presents is trusted and remembered. If it later changes before expiring, Junini stops before sending the request and asks whether to trust the new certificate.
@@ -39,7 +40,6 @@ Most Gemini capsules use self-signed certificates, so Junini uses [TOFU](https:/
 
 ### Not yet supported
 
-- Sending input to servers (`1x` responses)
 - Client certificates (`6x` responses)
 - Non-UTF-8 charsets and non-text media
 - Links to other schemes (`https://`, `gopher://`, …)

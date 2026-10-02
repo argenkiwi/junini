@@ -52,4 +52,30 @@ class GeminiUrlTest {
         assertFalse(url.isGemini)
         assertEquals("https://example.com/page", url.toString())
     }
+
+    @Test
+    fun withQueryPercentEncodesInputWithSpacesAsPercent20() {
+        assertEquals("gemini://example.org/docs/page.gmi?hello%20world", base.withQuery("hello world").toString())
+        assertEquals("gemini://example.org/docs/page.gmi?a%3Db%26c", base.withQuery("a=b&c").toString())
+    }
+
+    @Test
+    fun resolvingAPathDropsTheBaseQuery() {
+        val withQuery = Url("gemini://example.org/ask?Ada%20Lovelace")
+        assertEquals("gemini://example.org/ask", resolveUrl(withQuery, "/ask").toString())
+        assertEquals("gemini://example.org/ask", resolveUrl(withQuery, "gemini://example.org/ask").toString())
+        assertEquals("gemini://example.org/other", resolveUrl(withQuery, "other").toString())
+    }
+
+    @Test
+    fun resolvingAQueryOnlyReferenceReplacesTheBaseQuery() {
+        val withQuery = Url("gemini://example.org/ask?old")
+        assertEquals("gemini://example.org/ask?new", resolveUrl(withQuery, "?new").toString())
+    }
+
+    @Test
+    fun withQueryReplacesExistingQueryAndFragment() {
+        val url = Url("gemini://example.org/a?old=1#top")
+        assertEquals("gemini://example.org/a?new", url.withQuery("new").toString())
+    }
 }

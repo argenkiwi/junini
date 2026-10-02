@@ -201,6 +201,9 @@ fun BrowserScreen(
                     contentPadding = innerPadding,
                 )
             }
+            (state.page as? PageState.Input)?.let { page ->
+                InputSheet(page = page, onSubmit = viewModel::submitInput, onCancel = viewModel::cancelCertificateChange)
+            }
             if (state.isLoading) {
                 LinearProgressIndicator(
                     modifier = Modifier
@@ -390,6 +393,8 @@ private fun PageContent(
         is PageState.Message -> MessageView(page.title, page.detail, contentPadding)
         is PageState.Gemtext -> GemtextView(page.lines, onLinkClick, listState, contentPadding)
         is PageState.PlainText -> PlainTextView(page.text, listState, contentPadding)
+        // The prompt itself is a bottom sheet over this empty page.
+        is PageState.Input -> Box(Modifier.fillMaxSize())
         is PageState.CertificateChanged -> CertificateChangedView(
             page = page,
             onTrust = onTrustCertificate,

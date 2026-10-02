@@ -19,6 +19,7 @@ import kiwi.argen.junini.gemini.parseGemtext
 import kiwi.argen.junini.gemini.parseUserInput
 import kiwi.argen.junini.gemini.platformGeminiTransport
 import kiwi.argen.junini.gemini.resolveUrl
+import kiwi.argen.junini.gemini.withQuery
 import kiwi.argen.junini.history.BrowsingHistory
 import kiwi.argen.junini.history.HistoryStore
 import kiwi.argen.junini.history.InMemoryHistoryStore
@@ -96,6 +97,12 @@ sealed interface PageState {
         val current: Identity?,
         val available: List<Identity>,
     ) : PageState
+
+    /**
+     * The server at [url] asked for input (status 10, or 11 when [sensitive]) and showed [prompt].
+     * [attempt] makes each prompt distinct, so a repeated identical prompt still resets the sheet.
+     */
+    data class Input(val url: Url, val prompt: String, val sensitive: Boolean, val attempt: Int = 0) : PageState
 }
 
 class BrowserViewModel(
@@ -115,6 +122,7 @@ class BrowserViewModel(
     private val backStack = mutableListOf<HistoryEntry>()
     private val forwardStack = mutableListOf<HistoryEntry>()
     private var loadJob: Job? = null
+    private var inputAttempts = 0
 
     fun onUrlInputChange(value: String) =
         _state.update { it.copy(urlInput = value, suggestions = history.suggest(value)) }
@@ -166,7 +174,7 @@ class BrowserViewModel(
         loadJob?.cancel()
         val currentUrl = _state.value.currentUrl
         val currentPage = _state.value.page
-        if (currentUrl != null && currentPage !is PageState.Idle) {
+        if (currentUrl != null && currentPage !is PageState.Idle && currentPage !is PageState.Input) {
             forwardStack.add(HistoryEntry(currentUrl, currentPage))
             if (forwardStack.size > maxHistorySize) forwardStack.removeFirst()
         }
@@ -189,7 +197,7 @@ class BrowserViewModel(
         loadJob?.cancel()
         val currentUrl = _state.value.currentUrl
         val currentPage = _state.value.page
-        if (currentUrl != null && currentPage !is PageState.Idle) {
+        if (currentUrl != null && currentPage !is PageState.Idle && currentPage !is PageState.Input) {
             backStack.add(HistoryEntry(currentUrl, currentPage))
             if (backStack.size > maxHistorySize) backStack.removeFirst()
         }
@@ -300,10 +308,16 @@ class BrowserViewModel(
         load(page.url)
     }
 
-    /** Leaves a [PageState.CertificateChanged] or [PageState.ClientCertificateRequired] page without acting on it. */
+    /** Answers a [PageState.Input] page by requesting its URL again with [text] as the query. */
+    fun submitInput(text: String) {
+        val page = _state.value.page as? PageState.Input ?: return
+        load(page.url.withQuery(text))
+    }
+
+    /** Leaves a [PageState.CertificateChanged], [PageState.ClientCertificateRequired] or [PageState.Input] page without acting on it. */
     fun cancelCertificateChange() {
         val page = _state.value.page
-        if (page !is PageState.CertificateChanged && page !is PageState.ClientCertificateRequired) return
+        if (page !is PageState.CertificateChanged && page !is PageState.ClientCertificateRequired && page !is PageState.Input) return
         if (backStack.isNotEmpty()) {
             goBack()
         } else {
@@ -340,13 +354,16 @@ class BrowserViewModel(
             } catch (e: Exception) {
                 url to PageState.Message("Couldn't load page", e.message ?: e::class.simpleName.orEmpty())
             }
-            val (finalUrl, page) = result
+            val (finalUrl, loaded) = result
+            // Every prompt is a new one, even if the server asks the same thing again, so the sheet starts empty.
+            val page = if (loaded is PageState.Input) loaded.copy(attempt = ++inputAttempts) else loaded
             // Only pages that actually rendered are worth suggesting again.
             if (page is PageState.Gemtext || page is PageState.PlainText) history.record(finalUrl)
-            // A certificate prompt isn't a page worth going back to.
+            // A certificate or input prompt isn't a page worth going back to.
             val keepPrevious = previousPage !is PageState.Idle &&
                 previousPage !is PageState.CertificateChanged &&
-                previousPage !is PageState.ClientCertificateRequired
+                previousPage !is PageState.ClientCertificateRequired &&
+                previousPage !is PageState.Input
             if (previousUrl != null && keepPrevious && previousUrl != finalUrl) {
                 backStack.add(HistoryEntry(previousUrl, previousPage))
                 if (backStack.size > maxHistorySize) backStack.removeFirst()
@@ -372,10 +389,7 @@ private fun GeminiResponse.toBasicPageState(): PageState = when (this) {
         mimeType.isText -> PageState.PlainText(url, decodeText())
         else -> PageState.Message("Unsupported content", "Can't display $mimeType content yet")
     }
-    is GeminiResponse.Input -> PageState.Message(
-        "Input requested",
-        "${prompt.ifBlank { "The server asked for input." }}\n\nSending input isn't supported yet.",
-    )
+    is GeminiResponse.Input -> PageState.Input(url, prompt, sensitive)
     is GeminiResponse.Redirect -> PageState.Message("Redirect", "This page redirects to $target, which isn't a gemini:// URL.")
     is GeminiResponse.Failure -> PageState.Message("Error $status", message)
 }
