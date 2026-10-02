@@ -197,7 +197,28 @@ fun BrowserScreen(
         )
         Box(Modifier.fillMaxSize().consumeWindowInsets(scaffoldPadding)) {
             // A fresh list state per page, so every page opens scrolled to the top.
-            val pageContent = @Composable {
+            // Only a page that was loaded from somewhere can be loaded again. The box stays in the
+            // composition either way, so the page keeps its scroll position when this flips.
+            val canRefresh = state.currentUrl != null && state.page !is PageState.Input && state.identities == null
+            val refreshState = rememberPullToRefreshState()
+            PullToRefreshBox(
+                isRefreshing = state.isRefreshing,
+                onRefresh = { if (canRefresh) viewModel.reload() },
+                modifier = Modifier.fillMaxSize(),
+                state = refreshState,
+                // Starts below the status bar, since the page has no top bar to push it down.
+                indicator = {
+                    if (canRefresh) {
+                        PullToRefreshDefaults.Indicator(
+                            state = refreshState,
+                            isRefreshing = state.isRefreshing,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = innerPadding.calculateTopPadding()),
+                        )
+                    }
+                },
+            ) {
                 key(state.page) {
                     PageContent(
                         page = state.page,
@@ -212,29 +233,6 @@ fun BrowserScreen(
                         contentPadding = innerPadding,
                     )
                 }
-            }
-            // Only a page that was loaded from somewhere can be loaded again.
-            val canRefresh = state.currentUrl != null && state.page !is PageState.Input && state.identities == null
-            if (canRefresh) {
-                val refreshState = rememberPullToRefreshState()
-                PullToRefreshBox(
-                    isRefreshing = state.isRefreshing,
-                    onRefresh = viewModel::reload,
-                    modifier = Modifier.fillMaxSize(),
-                    state = refreshState,
-                    // Starts below the status bar, since the page has no top bar to push it down.
-                    indicator = {
-                        PullToRefreshDefaults.Indicator(
-                            state = refreshState,
-                            isRefreshing = state.isRefreshing,
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .padding(top = innerPadding.calculateTopPadding()),
-                        )
-                    },
-                ) { pageContent() }
-            } else {
-                pageContent()
             }
             state.identities?.let { items ->
                 IdentitiesScreen(

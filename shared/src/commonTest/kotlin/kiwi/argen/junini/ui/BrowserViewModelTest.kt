@@ -243,11 +243,44 @@ class BrowserViewModelTest {
     }
 
     @Test
-    fun reloadDoesNothingBeforeAnyPageLoaded() = runTest {
-        val vm = createViewModel()
-        vm.reload()
-        assertFalse(vm.state.value.isRefreshing)
-        assertFalse(vm.state.value.isLoading)
+    fun reloadBeforeAnyPageLoadedOpensTheTypedUrl() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(testDispatcher)
+        try {
+            val vm = createViewModel()
+            vm.onUrlInputChange("gemini://example.org/a")
+            vm.reload()
+            assertFalse(vm.state.value.isRefreshing)
+            advanceUntilIdle()
+            assertEquals(Url("gemini://example.org/a"), vm.state.value.currentUrl)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun reloadThatRedirectsLeavesTheBackStackAlone() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(testDispatcher)
+        try {
+            val responses = mutableMapOf(
+                "gemini://example.org/old" to "20 text/gemini\r\nold",
+                "gemini://example.org/new" to "20 text/gemini\r\nnew",
+            )
+            val vm = createViewModel(responses)
+            vm.onUrlInputChange("gemini://example.org/old")
+            vm.submitUrlInput()
+            advanceUntilIdle()
+
+            responses["gemini://example.org/old"] = "30 gemini://example.org/new\r\n"
+            vm.reload()
+            advanceUntilIdle()
+
+            assertEquals(Url("gemini://example.org/new"), vm.state.value.currentUrl)
+            assertFalse(vm.state.value.canGoBack)
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test

@@ -150,9 +150,12 @@ class BrowserViewModel(
         load(url)
     }
 
-    /** Loads the page being shown again, whatever the URL field now says. */
+    /**
+     * Loads the page being shown again, whatever the URL field now says. With no page yet there is nothing
+     * to reload, so this opens what was typed instead.
+     */
     fun reload() {
-        val url = _state.value.currentUrl ?: return
+        val url = _state.value.currentUrl ?: return submitUrlInput()
         if (_state.value.page is PageState.Input) return
         load(url, refreshing = true)
     }
@@ -388,7 +391,8 @@ class BrowserViewModel(
                 previousPage !is PageState.CertificateChanged &&
                 previousPage !is PageState.ClientCertificateRequired &&
                 previousPage !is PageState.Input
-            if (previousUrl != null && keepPrevious && previousUrl != finalUrl) {
+            // A reload that ends up elsewhere (the page moved) replaces the page rather than leaving it behind.
+            if (previousUrl != null && keepPrevious && previousUrl != finalUrl && !refreshing) {
                 backStack.add(HistoryEntry(previousUrl, previousPage))
                 if (backStack.size > maxHistorySize) backStack.removeFirst()
                 forwardStack.clear()
