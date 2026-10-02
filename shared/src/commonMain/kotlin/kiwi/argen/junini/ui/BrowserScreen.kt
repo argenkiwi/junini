@@ -7,7 +7,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -31,6 +38,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +65,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -75,6 +86,8 @@ fun BrowserScreen(
     identityFiles: IdentityFiles? = null,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    // Read here, above the Scaffold's own inset handling, so nothing has consumed it yet.
+    val navigationBarBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     // Hides the bottom bar while scrolling down and brings it back as soon as the user scrolls up.
     val scrollBehavior = BottomAppBarDefaults.exitAlwaysScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -103,6 +116,8 @@ fun BrowserScreen(
     Scaffold(
         modifier = Modifier
             .nestedScroll(scrollBehavior.nestedScrollConnection)
+            // The default content insets leave out the IME, so lift the whole screen (bar included) above it.
+            .imePadding()
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown) {
                     when {
@@ -123,7 +138,7 @@ fun BrowserScreen(
                         (event.isMetaPressed && event.key == Key.R) ||
                         (event.isCtrlPressed && event.key == Key.R) ||
                         (event.key == Key.F5) -> {
-                            viewModel.submitUrlInput()
+                            viewModel.reload()
                             true
                         }
                         else -> false
@@ -170,22 +185,54 @@ fun BrowserScreen(
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
-    ) { innerPadding ->
-        Box(Modifier.fillMaxSize()) {
+    ) { scaffoldPadding ->
+        // Scaffold's bottom padding follows the bar, so it drops to zero once the bar hides on scroll and the
+        // last lines would end up under the system navigation bar. Never go below the navigation bar's inset.
+        val layoutDirection = LocalLayoutDirection.current
+        val innerPadding = PaddingValues(
+            start = scaffoldPadding.calculateStartPadding(layoutDirection),
+            top = scaffoldPadding.calculateTopPadding(),
+            end = scaffoldPadding.calculateEndPadding(layoutDirection),
+            bottom = maxOf(scaffoldPadding.calculateBottomPadding(), navigationBarBottom),
+        )
+        Box(Modifier.fillMaxSize().consumeWindowInsets(scaffoldPadding)) {
             // A fresh list state per page, so every page opens scrolled to the top.
-            key(state.page) {
-                PageContent(
-                    page = state.page,
-                    onLinkClick = viewModel::onLinkClick,
-                    onTrustCertificate = viewModel::trustNewCertificate,
-                    onCancelCertificate = viewModel::cancelCertificateChange,
-                    onUseIdentity = viewModel::useIdentity,
-                    onImportIdentity = viewModel::importIdentityForPage,
-                    identityFiles = identityFiles,
-                    onUnassignIdentity = viewModel::unassignIdentityForPage,
-                    listState = rememberLazyListState(),
-                    contentPadding = innerPadding,
-                )
+            // Only a page that was loaded from somewhere can be loaded again. The box stays in the
+            // composition either way, so the page keeps its scroll position when this flips.
+            val canRefresh = state.currentUrl != null && state.page !is PageState.Input && state.identities == null
+            val refreshState = rememberPullToRefreshState()
+            PullToRefreshBox(
+                isRefreshing = state.isRefreshing,
+                onRefresh = { if (canRefresh) viewModel.reload() },
+                modifier = Modifier.fillMaxSize(),
+                state = refreshState,
+                // Starts below the status bar, since the page has no top bar to push it down.
+                indicator = {
+                    if (canRefresh) {
+                        PullToRefreshDefaults.Indicator(
+                            state = refreshState,
+                            isRefreshing = state.isRefreshing,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = innerPadding.calculateTopPadding()),
+                        )
+                    }
+                },
+            ) {
+                key(state.page) {
+                    PageContent(
+                        page = state.page,
+                        onLinkClick = viewModel::onLinkClick,
+                        onTrustCertificate = viewModel::trustNewCertificate,
+                        onCancelCertificate = viewModel::cancelCertificateChange,
+                        onUseIdentity = viewModel::useIdentity,
+                        onImportIdentity = viewModel::importIdentityForPage,
+                        identityFiles = identityFiles,
+                        onUnassignIdentity = viewModel::unassignIdentityForPage,
+                        listState = rememberLazyListState(),
+                        contentPadding = innerPadding,
+                    )
+                }
             }
             state.identities?.let { items ->
                 IdentitiesScreen(
@@ -204,7 +251,7 @@ fun BrowserScreen(
             (state.page as? PageState.Input)?.let { page ->
                 InputSheet(page = page, isLoading = state.isLoading, onSubmit = viewModel::submitInput, onCancel = viewModel::cancelCertificateChange)
             }
-            if (state.isLoading) {
+            if (state.isLoading && !state.isRefreshing) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
