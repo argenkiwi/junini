@@ -9,6 +9,9 @@ import androidx.compose.ui.tooling.preview.Preview
 import java.io.File
 import kiwi.argen.junini.gemini.FileKnownHostsStore
 import kiwi.argen.junini.history.FileHistoryStore
+import kiwi.argen.junini.identity.FileIdentityStore
+import kiwi.argen.junini.identity.IdentityManager
+import kiwi.argen.junini.identity.JdkIdentityCodec
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -17,8 +20,10 @@ class MainActivity : ComponentActivity() {
 
         val knownHostsStore = FileKnownHostsStore(File(filesDir, "known_hosts"))
         val historyStore = FileHistoryStore(File(filesDir, "history"))
+        val identityManager = IdentityManager(FileIdentityStore(File(filesDir, "identities")), JdkIdentityCodec())
+        val identityFiles = AndroidIdentityFiles(this)
         setContent {
-            App(knownHostsStore, historyStore)
+            App(knownHostsStore, historyStore, identityManager, identityFiles)
         }
     }
 }

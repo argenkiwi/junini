@@ -10,6 +10,8 @@ Gemini is TLS over raw TCP (port 1965). Networking only works on **Android and D
 
 Pages that rendered (gemtext or plain text, final URL after redirects) are recorded in `BrowsingHistory` (`history/`, commonMain), which normalises URLs, ranks URL-bar suggestions by frecency and caps the history at 500 entries. It is persisted by `FileHistoryStore` (jvmShared) the same way as the pins, and falls back to `InMemoryHistoryStore` elsewhere.
 
+Identities (client certificates) are managed by `IdentityManager` (`identity/`, commonMain) on top of an `IdentityStore`, which `FileIdentityStore` (jvmShared) persists under `identities/` next to the pins. An identity is a PEM client certificate and private key (the `.crt` + `.key` pair or combined `.pem` that Lagrange uses), imported or exported through `IdentityFiles` and assigned to a host:port. The app never generates certificates. `JdkIdentityCodec` (jvmShared) parses them with the JDK alone and rejects non-RSA and password-protected keys, because Ktor's TLS client doesn't present EC client certificates. The transport presents the assigned identity when the server asks, and status 60, 61 and 62 become `PageState.ClientCertificateRequired`, a pick/import prompt. `MainActivity` and the desktop `main.kt` pass an `IdentityManager` and `IdentityFiles` (file picker) into `App`; without them the Identities menu item is hidden.
+
 ## Commands
 
 ```

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.ktor.http.Url
 import kiwi.argen.junini.gemini.CertificateMismatchException
+import kiwi.argen.junini.gemini.GEMINI_DEFAULT_PORT
 import kiwi.argen.junini.gemini.GeminiClient
 import kiwi.argen.junini.gemini.GeminiResponse
 import kiwi.argen.junini.gemini.GemtextLine
@@ -12,6 +13,7 @@ import kiwi.argen.junini.gemini.KnownHosts
 import kiwi.argen.junini.gemini.KnownHostsStore
 import kiwi.argen.junini.gemini.ServerCertificate
 import kiwi.argen.junini.gemini.decodeText
+import kiwi.argen.junini.gemini.geminiPort
 import kiwi.argen.junini.gemini.isGemini
 import kiwi.argen.junini.gemini.parseGemtext
 import kiwi.argen.junini.gemini.parseUserInput
@@ -20,6 +22,9 @@ import kiwi.argen.junini.gemini.resolveUrl
 import kiwi.argen.junini.history.BrowsingHistory
 import kiwi.argen.junini.history.HistoryStore
 import kiwi.argen.junini.history.InMemoryHistoryStore
+import kiwi.argen.junini.identity.Identity
+import kiwi.argen.junini.identity.IdentityManager
+import kiwi.argen.junini.identity.InMemoryIdentityStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,7 +44,14 @@ data class BrowserState(
     val suggestions: List<String> = emptyList(),
     /** A one-off message for a snackbar; cleared with [BrowserViewModel.noticeShown]. */
     val notice: String? = null,
+    /** Whether this platform can manage identities at all. */
+    val identitiesAvailable: Boolean = false,
+    /** The identities screen's contents while it is open, otherwise null. */
+    val identities: List<IdentityItem>? = null,
 )
+
+/** An [identity] and the hosts (`host` or `host:port`) it is assigned to. */
+data class IdentityItem(val identity: Identity, val hosts: List<String>)
 
 data class HistoryEntry(
     val url: Url,
@@ -60,17 +72,34 @@ sealed interface PageState {
         val pinned: ServerCertificate,
         val presented: ServerCertificate,
     ) : PageState
+
+    /**
+     * [host] answered with status 60, 61 or 62. [current] is the identity assigned to the host, if any
+     * (it was rejected for 61 and 62), and [available] are all the identities the user could pick instead.
+     */
+    data class ClientCertificateRequired(
+        val url: Url,
+        val host: String,
+        val port: Int,
+        val status: Int,
+        val message: String,
+        val current: Identity?,
+        val available: List<Identity>,
+    ) : PageState
 }
 
 class BrowserViewModel(
     knownHostsStore: KnownHostsStore = InMemoryKnownHostsStore(),
     private val knownHosts: KnownHosts = KnownHosts(knownHostsStore),
-    private val client: GeminiClient = GeminiClient(platformGeminiTransport(knownHosts)),
+    private val identityManager: IdentityManager? = null,
+    private val client: GeminiClient = GeminiClient(
+        platformGeminiTransport(knownHosts, identityManager?.store ?: InMemoryIdentityStore()),
+    ),
     private val maxHistorySize: Int = 50,
     historyStore: HistoryStore = InMemoryHistoryStore(),
     private val history: BrowsingHistory = BrowsingHistory(historyStore),
 ) : ViewModel() {
-    private val _state = MutableStateFlow(BrowserState())
+    private val _state = MutableStateFlow(BrowserState(identitiesAvailable = identityManager != null))
     val state: StateFlow<BrowserState> = _state.asStateFlow()
 
     private val backStack = mutableListOf<HistoryEntry>()
@@ -170,6 +199,88 @@ class BrowserViewModel(
 
     fun noticeShown() = _state.update { it.copy(notice = null) }
 
+    fun openIdentities() = _state.update { it.copy(identities = identityItems()) }
+
+    fun closeIdentities() = _state.update { it.copy(identities = null) }
+
+    /** Imports the identity in [texts], the text of one PEM file with a certificate and key or of a certificate file and a key file. */
+    fun importIdentity(texts: List<String>) = manageIdentities("Identity imported") { it.import(texts) }
+
+    /** The identity as PEM text, or null (with a notice) if it couldn't be exported. */
+    fun exportIdentity(id: String): String? {
+        val manager = identityManager ?: return null
+        return try {
+            manager.export(id)
+        } catch (e: Exception) {
+            _state.update { it.copy(notice = e.message ?: "Couldn't export the identity") }
+            null
+        }
+    }
+
+    fun deleteIdentity(id: String) = manageIdentities("Identity deleted") { it.delete(id) }
+
+    /** Assigns [id] to the capsule in [hostInput], which can be a host, `host:port` or a gemini:// URL. */
+    fun assignIdentity(hostInput: String, id: String) {
+        val url = parseUserInput(hostInput)
+        if (url == null) {
+            _state.update { it.copy(notice = "Enter a capsule address") }
+            return
+        }
+        manageIdentities("Identity assigned to ${url.host}") { it.assign(url.host, url.geminiPort, id) }
+    }
+
+    fun unassignIdentity(host: String, port: Int) =
+        manageIdentities("Identity unassigned from $host") { it.unassign(host, port) }
+
+    /** Assigns [id] to the host behind a [PageState.ClientCertificateRequired] page and loads the page again. */
+    fun useIdentity(id: String) {
+        val page = _state.value.page as? PageState.ClientCertificateRequired ?: return
+        manageIdentities(null) { it.assign(page.host, page.port, id) }
+        load(page.url)
+    }
+
+    /** Imports the identity in [texts], assigns it to the host behind a [PageState.ClientCertificateRequired] page and reloads. */
+    fun importIdentityForPage(texts: List<String>) {
+        val page = _state.value.page as? PageState.ClientCertificateRequired ?: return
+        val manager = identityManager ?: return
+        try {
+            manager.assign(page.host, page.port, manager.import(texts).id)
+        } catch (e: Exception) {
+            _state.update { it.copy(notice = e.message ?: "Couldn't import the identity") }
+            return
+        }
+        load(page.url)
+    }
+
+    /** Stops using the rejected identity for the host behind a [PageState.ClientCertificateRequired] page. */
+    fun unassignIdentityForPage() {
+        val page = _state.value.page as? PageState.ClientCertificateRequired ?: return
+        manageIdentities(null) { it.unassign(page.host, page.port) }
+        load(page.url)
+    }
+
+    private fun identityItems(): List<IdentityItem> {
+        val manager = identityManager ?: return emptyList()
+        val hostsById = manager.assignments().entries
+            .groupBy({ it.value }, { (key, _) -> key.first.let { host -> if (key.second == GEMINI_DEFAULT_PORT) host else "$host:${key.second}" } })
+        return manager.identities().map { IdentityItem(it, hostsById[it.id].orEmpty().sorted()) }
+    }
+
+    private fun manageIdentities(message: String?, action: (IdentityManager) -> Unit) {
+        val manager = identityManager ?: return
+        try {
+            action(manager)
+            _state.update {
+                it.copy(
+                    identities = if (it.identities != null) identityItems() else null,
+                    notice = message ?: it.notice,
+                )
+            }
+        } catch (e: Exception) {
+            _state.update { it.copy(notice = e.message ?: "Something went wrong with the identity") }
+        }
+    }
+
     /** Pins the new certificate shown by a [PageState.CertificateChanged] page and loads the page again. */
     fun trustNewCertificate() {
         val page = _state.value.page as? PageState.CertificateChanged ?: return
@@ -177,14 +288,28 @@ class BrowserViewModel(
         load(page.url)
     }
 
-    /** Leaves a [PageState.CertificateChanged] page without trusting the new certificate. */
+    /** Leaves a [PageState.CertificateChanged] or [PageState.ClientCertificateRequired] page without acting on it. */
     fun cancelCertificateChange() {
-        if (_state.value.page !is PageState.CertificateChanged) return
+        val page = _state.value.page
+        if (page !is PageState.CertificateChanged && page !is PageState.ClientCertificateRequired) return
         if (backStack.isNotEmpty()) {
             goBack()
         } else {
             _state.update { it.copy(urlInput = "", suggestions = emptyList(), currentUrl = null, page = PageState.Idle) }
         }
+    }
+
+    private fun GeminiResponse.toPageState(): PageState {
+        if (this is GeminiResponse.Failure && status in 60..62) {
+            val manager = identityManager
+            if (manager != null) {
+                val port = url.geminiPort
+                return PageState.ClientCertificateRequired(
+                    url, url.host, port, status, message, manager.assignedTo(url.host, port), manager.identities(),
+                )
+            }
+        }
+        return toBasicPageState()
     }
 
     private fun load(url: Url) {
@@ -207,7 +332,9 @@ class BrowserViewModel(
             // Only pages that actually rendered are worth suggesting again.
             if (page is PageState.Gemtext || page is PageState.PlainText) history.record(finalUrl)
             // A certificate prompt isn't a page worth going back to.
-            val keepPrevious = previousPage !is PageState.Idle && previousPage !is PageState.CertificateChanged
+            val keepPrevious = previousPage !is PageState.Idle &&
+                previousPage !is PageState.CertificateChanged &&
+                previousPage !is PageState.ClientCertificateRequired
             if (previousUrl != null && keepPrevious && previousUrl != finalUrl) {
                 backStack.add(HistoryEntry(previousUrl, previousPage))
                 if (backStack.size > maxHistorySize) backStack.removeFirst()
@@ -227,7 +354,7 @@ class BrowserViewModel(
     }
 }
 
-private fun GeminiResponse.toPageState(): PageState = when (this) {
+private fun GeminiResponse.toBasicPageState(): PageState = when (this) {
     is GeminiResponse.Success -> when {
         mimeType.isGemtext -> PageState.Gemtext(url, parseGemtext(decodeText()))
         mimeType.isText -> PageState.PlainText(url, decodeText())
