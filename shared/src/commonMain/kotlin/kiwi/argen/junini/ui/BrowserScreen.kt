@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kiwi.argen.junini.identity.IdentityFiles
 import junini.shared.generated.resources.Res
 import junini.shared.generated.resources.ic_arrow_back
 import junini.shared.generated.resources.ic_arrow_forward
@@ -69,13 +70,17 @@ import org.jetbrains.compose.resources.painterResource
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }) {
+fun BrowserScreen(
+    viewModel: BrowserViewModel = viewModel { BrowserViewModel() },
+    identityFiles: IdentityFiles? = null,
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     // Hides the bottom bar while scrolling down and brings it back as soon as the user scrolls up.
     val scrollBehavior = BottomAppBarDefaults.exitAlwaysScrollBehavior()
     val snackbarHostState = remember { SnackbarHostState() }
 
     BackHandler(enabled = state.canGoBack, onBack = viewModel::goBack)
+    BackHandler(enabled = state.identities != null, onBack = viewModel::closeIdentities)
 
     LaunchedEffect(state.notice) {
         state.notice?.let {
@@ -135,6 +140,7 @@ fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }
                 canGoForward = state.canGoForward,
                 onForward = viewModel::goForward,
                 onClearHistory = viewModel::clearHistory,
+                onIdentities = if (state.identitiesAvailable) viewModel::openIdentities else null,
                 onFocusLost = viewModel::dismissSuggestions,
                 // The best match sits right above the field, so Up moves away from it.
                 onSuggestionKey = { event ->
@@ -173,7 +179,25 @@ fun BrowserScreen(viewModel: BrowserViewModel = viewModel { BrowserViewModel() }
                     onLinkClick = viewModel::onLinkClick,
                     onTrustCertificate = viewModel::trustNewCertificate,
                     onCancelCertificate = viewModel::cancelCertificateChange,
+                    onUseIdentity = viewModel::useIdentity,
+                    onImportIdentity = viewModel::importIdentityForPage,
+                    identityFiles = identityFiles,
+                    onUnassignIdentity = viewModel::unassignIdentityForPage,
                     listState = rememberLazyListState(),
+                    contentPadding = innerPadding,
+                )
+            }
+            state.identities?.let { items ->
+                IdentitiesScreen(
+                    items = items,
+                    currentHost = state.currentUrl?.host,
+                    files = identityFiles,
+                    onImport = viewModel::importIdentity,
+                    onExport = viewModel::exportIdentity,
+                    onDelete = viewModel::deleteIdentity,
+                    onAssign = viewModel::assignIdentity,
+                    onUnassign = viewModel::unassignIdentity,
+                    onClose = viewModel::closeIdentities,
                     contentPadding = innerPadding,
                 )
             }
@@ -247,6 +271,7 @@ private fun UrlBottomBar(
     canGoForward: Boolean,
     onForward: () -> Unit,
     onClearHistory: () -> Unit,
+    onIdentities: (() -> Unit)?,
     onFocusLost: () -> Unit,
     onSuggestionKey: (KeyEvent) -> Boolean,
     scrollBehavior: BottomAppBarScrollBehavior,
@@ -320,6 +345,16 @@ private fun UrlBottomBar(
                     )
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (onIdentities != null) {
+                        DropdownMenuItem(
+                            text = { Text("Identities") },
+                            onClick = {
+                                menuOpen = false
+                                focusManager.clearFocus()
+                                onIdentities()
+                            },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Clear history") },
                         onClick = {
@@ -339,6 +374,10 @@ private fun PageContent(
     onLinkClick: (String) -> Unit,
     onTrustCertificate: () -> Unit,
     onCancelCertificate: () -> Unit,
+    onUseIdentity: (String) -> Unit,
+    onImportIdentity: (List<String>) -> Unit,
+    identityFiles: IdentityFiles?,
+    onUnassignIdentity: () -> Unit,
     listState: LazyListState,
     contentPadding: PaddingValues,
 ) {
@@ -354,6 +393,15 @@ private fun PageContent(
         is PageState.CertificateChanged -> CertificateChangedView(
             page = page,
             onTrust = onTrustCertificate,
+            onCancel = onCancelCertificate,
+            contentPadding = contentPadding,
+        )
+        is PageState.ClientCertificateRequired -> ClientCertificateRequiredView(
+            page = page,
+            onUseIdentity = onUseIdentity,
+            onImportIdentity = onImportIdentity,
+            files = identityFiles,
+            onUnassign = onUnassignIdentity,
             onCancel = onCancelCertificate,
             contentPadding = contentPadding,
         )

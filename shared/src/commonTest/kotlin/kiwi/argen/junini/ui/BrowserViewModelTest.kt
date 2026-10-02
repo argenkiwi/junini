@@ -9,11 +9,20 @@ import kiwi.argen.junini.gemini.KnownHostsStore
 import kiwi.argen.junini.gemini.ServerCertificate
 import kiwi.argen.junini.history.HistoryStore
 import kiwi.argen.junini.history.InMemoryHistoryStore
+import kiwi.argen.junini.identity.FakeIdentityCodec
+import kiwi.argen.junini.identity.IdentityManager
+import kiwi.argen.junini.identity.IdentityStore
+import kiwi.argen.junini.identity.InMemoryIdentityStore
+import kiwi.argen.junini.identity.fakeCertificate
+import kiwi.argen.junini.identity.fakeKey
+import kiwi.argen.junini.identity.importFake
 import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -277,7 +286,7 @@ class BrowserViewModelTest {
         val store = InMemoryKnownHostsStore()
         val knownHosts = KnownHosts(store)
         val transport = PinningTransport(knownHosts, original)
-        return Triple(BrowserViewModel(store, knownHosts, GeminiClient(transport)), transport, store)
+        return Triple(BrowserViewModel(store, knownHosts, client = GeminiClient(transport)), transport, store)
     }
 
     private fun BrowserViewModel.open(url: String) {
@@ -498,5 +507,260 @@ class BrowserViewModelTest {
         } finally {
             Dispatchers.resetMain()
         }
+    }
+
+    /** Answers 60 until an identity is assigned to the host, like a capsule that requires a login. */
+    private class IdentityRequiredTransport(private val identities: InMemoryIdentityStore) : GeminiTransport {
+        val presented = mutableListOf<String?>()
+
+        override suspend fun fetch(host: String, port: Int, request: String): ByteArray {
+            val credentials = identities.credentialsFor(host, port)
+            presented += credentials?.certificatePem
+            return if (credentials == null) "60 Please identify yourself\r\n".encodeToByteArray()
+            else "20 text/gemini\r\n# Hello".encodeToByteArray()
+        }
+    }
+
+    private val fingerprintA = "aa".repeat(32)
+
+    private fun identityViewModel(): Triple<BrowserViewModel, IdentityManager, IdentityRequiredTransport> {
+        val identities = InMemoryIdentityStore()
+        val manager = IdentityManager(identities, FakeIdentityCodec())
+        val transport = IdentityRequiredTransport(identities)
+        return Triple(BrowserViewModel(identityManager = manager, client = GeminiClient(transport)), manager, transport)
+    }
+
+    @Test
+    fun status60ShowsTheIdentityPrompt() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val (vm, manager, _) = identityViewModel()
+            val existing = manager.importFake(fingerprintA, "Existing")
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+
+            val page = assertIs<PageState.ClientCertificateRequired>(vm.state.value.page)
+            assertEquals("example.org", page.host)
+            assertEquals(1965, page.port)
+            assertEquals(60, page.status)
+            assertNull(page.current)
+            assertEquals(listOf(existing), page.available)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun pickingAnIdentityAssignsItAndReloadsThePage() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val (vm, manager, transport) = identityViewModel()
+            val identity = manager.importFake(fingerprintA, "Existing")
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+
+            vm.useIdentity(identity.id)
+            advanceUntilIdle()
+
+            assertIs<PageState.Gemtext>(vm.state.value.page)
+            assertEquals(identity, manager.assignedTo("example.org", 1965))
+            assertNotNull(transport.presented.last())
+            // The prompt isn't a page to go back to.
+            assertFalse(vm.state.value.canGoBack)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun importingFromThePromptAssignsTheIdentityAndReloads() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val (vm, manager, _) = identityViewModel()
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+
+            vm.importIdentityForPage(listOf(fakeCertificate(fingerprintA, "Imported"), fakeKey()))
+            advanceUntilIdle()
+
+            assertIs<PageState.Gemtext>(vm.state.value.page)
+            assertEquals("Imported", manager.assignedTo("example.org", 1965)?.name)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun aFailedImportFromThePromptKeepsThePromptAndExplainsWhy() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val (vm, manager, _) = identityViewModel()
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+
+            vm.importIdentityForPage(listOf(fakeCertificate(fingerprintA)))
+            advanceUntilIdle()
+
+            assertIs<PageState.ClientCertificateRequired>(vm.state.value.page)
+            assertEquals("No private key found", vm.state.value.notice)
+            assertEquals(emptyList(), manager.identities())
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun unassigningFromThePromptShowsItAgainWithoutACurrentIdentity() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val (vm, manager, _) = identityViewModel()
+            val identity = manager.importFake(fingerprintA, "Existing")
+            manager.assign("example.org", 1965, identity.id)
+            vm.open("gemini://example.org/a")
+            advanceUntilIdle()
+            assertIs<PageState.Gemtext>(vm.state.value.page)
+
+            manager.unassign("example.org", 1965)
+            vm.open("gemini://example.org/b")
+            advanceUntilIdle()
+            manager.assign("example.org", 1965, identity.id)
+            vm.unassignIdentityForPage()
+            advanceUntilIdle()
+
+            val page = assertIs<PageState.ClientCertificateRequired>(vm.state.value.page)
+            assertNull(page.current)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun withoutAnIdentityManagerStatus60IsAPlainError() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val vm = createViewModel(mapOf("gemini://example.org/" to "60 Certificate required\r\n"))
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+
+            assertIs<PageState.Message>(vm.state.value.page)
+            assertFalse(vm.state.value.identitiesAvailable)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun importingFromTheIdentityScreenRefreshesTheList() {
+        val (vm, manager, _) = identityViewModel()
+        vm.openIdentities()
+
+        vm.importIdentity(listOf(fakeCertificate(fingerprintA, "New one"), fakeKey()))
+
+        assertEquals(listOf("New one"), vm.state.value.identities?.map { it.identity.name })
+        assertEquals("Identity imported", vm.state.value.notice)
+        assertEquals(1, manager.identities().size)
+    }
+
+    @Test
+    fun exportGivesPemTextAndAnUnknownIdentityGivesANotice() {
+        val (vm, manager, _) = identityViewModel()
+        val identity = manager.importFake(fingerprintA)
+
+        assertTrue(vm.exportIdentity(identity.id)!!.contains("-----BEGIN PRIVATE KEY-----"))
+        assertNull(vm.exportIdentity("missing"))
+        assertEquals("Identity not found", vm.state.value.notice)
+    }
+
+    @Test
+    fun identityScreenListsIdentitiesWithTheirHosts() {
+        val (vm, manager, _) = identityViewModel()
+        val identity = manager.importFake(fingerprintA, "Listed")
+        manager.assign("a.example", 1965, identity.id)
+        manager.assign("b.example", 1966, identity.id)
+
+        vm.openIdentities()
+
+        assertEquals(
+            listOf(IdentityItem(identity, listOf(IdentityHost("a.example", 1965), IdentityHost("b.example", 1966)))),
+            vm.state.value.identities,
+        )
+        vm.closeIdentities()
+        assertNull(vm.state.value.identities)
+    }
+
+    @Test
+    fun assigningFromTheIdentityScreenAcceptsHostsWithPorts() {
+        val (vm, manager, _) = identityViewModel()
+        val identity = manager.importFake(fingerprintA, "Listed")
+        vm.openIdentities()
+
+        vm.assignIdentity("Example.org:1966", identity.id)
+
+        assertEquals(identity, manager.assignedTo("example.org", 1966))
+        assertEquals(listOf(IdentityHost("example.org", 1966)), vm.state.value.identities?.single()?.hosts)
+
+        vm.unassignIdentity("example.org", 1966)
+        assertEquals(emptyList(), vm.state.value.identities?.single()?.hosts)
+    }
+
+    @Test
+    fun ipv6HostsWithAPortCanBeUnassigned() {
+        val (vm, manager, _) = identityViewModel()
+        val identity = manager.importFake(fingerprintA)
+        manager.assign("::1", 1966, identity.id)
+        vm.openIdentities()
+
+        val capsule = vm.state.value.identities!!.single().hosts.single()
+        assertEquals(IdentityHost("::1", 1966), capsule)
+        assertEquals("[::1]:1966", capsule.label)
+        assertEquals("example.org", IdentityHost("example.org", 1965).label)
+        assertEquals("example.org:1966", IdentityHost("example.org", 1966).label)
+
+        vm.unassignIdentity(capsule.host, capsule.port)
+        assertEquals(emptyList(), vm.state.value.identities?.single()?.hosts)
+        assertNull(manager.assignedTo("::1", 1966))
+    }
+
+    /** A store whose changes to assignments fail, to check that the page isn't reloaded after a failure. */
+    private class FailingAssignStore(private val delegate: InMemoryIdentityStore) : IdentityStore by delegate {
+        override fun assign(host: String, port: Int, id: String) = throw IllegalStateException("Disk full")
+        override fun unassign(host: String, port: Int) = throw IllegalStateException("Disk full")
+    }
+
+    @Test
+    fun aFailedAssignOrUnassignFromThePromptDoesNotReload() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val identities = InMemoryIdentityStore()
+            val manager = IdentityManager(FailingAssignStore(identities), FakeIdentityCodec())
+            val transport = IdentityRequiredTransport(identities)
+            val vm = BrowserViewModel(identityManager = manager, client = GeminiClient(transport))
+            val identity = manager.importFake(fingerprintA)
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+            val requests = transport.presented.size
+
+            vm.useIdentity(identity.id)
+            advanceUntilIdle()
+            assertEquals("Disk full", vm.state.value.notice)
+            vm.unassignIdentityForPage()
+            advanceUntilIdle()
+
+            assertEquals(requests, transport.presented.size)
+            assertIs<PageState.ClientCertificateRequired>(vm.state.value.page)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun deletingFromTheIdentityScreenRefreshesTheList() {
+        val (vm, manager, _) = identityViewModel()
+        val identity = manager.importFake(fingerprintA)
+        vm.openIdentities()
+
+        vm.deleteIdentity(identity.id)
+
+        assertEquals(emptyList(), vm.state.value.identities)
     }
 }

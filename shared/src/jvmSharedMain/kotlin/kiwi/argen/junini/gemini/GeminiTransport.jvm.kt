@@ -4,6 +4,7 @@ import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.aSocket
 import io.ktor.network.sockets.openReadChannel
 import io.ktor.network.sockets.openWriteChannel
+import io.ktor.network.tls.addCertificateChain
 import io.ktor.network.tls.tls
 import io.ktor.utils.io.readRemaining
 import io.ktor.utils.io.writeStringUtf8
@@ -11,6 +12,8 @@ import java.security.MessageDigest
 import java.security.cert.CertificateException
 import java.security.cert.X509Certificate
 import javax.net.ssl.X509TrustManager
+import kiwi.argen.junini.identity.IdentityStore
+import kiwi.argen.junini.identity.toKeyAndChain
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.Instant
 import kotlinx.coroutines.CancellationException
@@ -21,7 +24,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.io.readByteArray
 
-actual fun platformGeminiTransport(knownHosts: KnownHosts): GeminiTransport = KtorGeminiTransport(knownHosts)
+actual fun platformGeminiTransport(knownHosts: KnownHosts, identities: IdentityStore): GeminiTransport =
+    KtorGeminiTransport(knownHosts, identities)
 
 private val REQUEST_TIMEOUT = 30.seconds
 private const val MAX_RESPONSE_BYTES = 32L * 1024 * 1024
@@ -31,10 +35,14 @@ private const val MAX_RESPONSE_BYTES = 32L * 1024 * 1024
 // error from fetch(), and left unhandled these would crash the app on Android.
 private val IgnoreTlsSessionErrors = CoroutineExceptionHandler { _, _ -> }
 
-internal class KtorGeminiTransport(private val knownHosts: KnownHosts) : GeminiTransport {
+internal class KtorGeminiTransport(
+    private val knownHosts: KnownHosts,
+    private val identities: IdentityStore,
+) : GeminiTransport {
     override suspend fun fetch(host: String, port: Int, request: String): ByteArray =
         withContext(Dispatchers.IO) {
             val trustManager = TofuTrustManager(knownHosts, host, port)
+            val credentials = identities.credentialsFor(host, port)
             // The TLS session launches long-lived reader/writer coroutines in the context it's given.
             // Giving it the caller's context would make this scope wait on them forever, so it gets
             // its own Job, which is cancelled once the response has been read.
@@ -46,6 +54,10 @@ internal class KtorGeminiTransport(private val knownHosts: KnownHosts) : GeminiT
                             tcp.tls(Dispatchers.IO + tlsJob + IgnoreTlsSessionErrors) {
                                 serverName = host
                                 this.trustManager = trustManager
+                                credentials?.let {
+                                    val (key, chain) = it.toKeyAndChain()
+                                    addCertificateChain(chain, key)
+                                }
                             }.use { socket ->
                                 val output = socket.openWriteChannel(autoFlush = false)
                                 output.writeStringUtf8(request)
