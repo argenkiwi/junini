@@ -3,6 +3,7 @@ package kiwi.argen.junini.gemini
 import io.ktor.http.DEFAULT_PORT
 import io.ktor.http.URLBuilder
 import io.ktor.http.Url
+import io.ktor.http.encodeURLParameter
 import io.ktor.http.encodedPath
 import io.ktor.http.takeFrom
 
@@ -24,10 +25,33 @@ fun parseUserInput(input: String): Url? {
 
 /** Resolves [href] (as found in a link line or a redirect) against [base], per RFC 3986. */
 fun resolveUrl(base: Url, href: String): Url? = runCatching {
-    val builder = URLBuilder(base).takeFrom(href.trim())
+    val reference = href.trim()
+    val builder = URLBuilder(base)
+    // Only an empty or fragment-only reference keeps the base's query (RFC 3986 section 5.2.2). takeFrom appends
+    // to the existing parameters instead of replacing them, so clear them first.
+    if (reference.isNotEmpty() && !reference.startsWith('#')) builder.parameters.clear()
+    builder.takeFrom(reference)
     builder.pathSegments = removeDotSegments(builder.pathSegments)
     builder.build().withRootPath()
 }.getOrNull()
+
+/**
+ * This URL with [input] as its whole query, the way a Gemini server expects the answer to an input request:
+ * percent-encoded (spaces as `%20`) rather than form-encoded. Any existing query and fragment are dropped.
+ */
+fun Url.withQuery(input: String): Url {
+    val base = URLBuilder(this).apply {
+        fragment = ""
+        parameters.clear()
+    }.build().toString().substringBefore('?')
+    return Url("$base?${input.encodeURLParameter()}")
+}
+
+/** This URL without its query and fragment. */
+fun Url.withoutQuery(): Url = URLBuilder(this).apply {
+    fragment = ""
+    parameters.clear()
+}.build()
 
 val Url.isGemini: Boolean get() = protocol.name.equals(GEMINI_SCHEME, ignoreCase = true)
 
