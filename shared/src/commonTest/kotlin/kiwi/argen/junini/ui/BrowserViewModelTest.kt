@@ -11,6 +11,7 @@ import kiwi.argen.junini.history.HistoryStore
 import kiwi.argen.junini.history.InMemoryHistoryStore
 import kiwi.argen.junini.identity.FakeIdentityCodec
 import kiwi.argen.junini.identity.IdentityManager
+import kiwi.argen.junini.identity.IdentityStore
 import kiwi.argen.junini.identity.InMemoryIdentityStore
 import kiwi.argen.junini.identity.fakeCertificate
 import kiwi.argen.junini.identity.fakeKey
@@ -680,7 +681,7 @@ class BrowserViewModelTest {
         vm.openIdentities()
 
         assertEquals(
-            listOf(IdentityItem(identity, listOf("a.example", "b.example:1966"))),
+            listOf(IdentityItem(identity, listOf(IdentityHost("a.example", 1965), IdentityHost("b.example", 1966)))),
             vm.state.value.identities,
         )
         vm.closeIdentities()
@@ -696,10 +697,60 @@ class BrowserViewModelTest {
         vm.assignIdentity("Example.org:1966", identity.id)
 
         assertEquals(identity, manager.assignedTo("example.org", 1966))
-        assertEquals(listOf("example.org:1966"), vm.state.value.identities?.single()?.hosts)
+        assertEquals(listOf(IdentityHost("example.org", 1966)), vm.state.value.identities?.single()?.hosts)
 
         vm.unassignIdentity("example.org", 1966)
         assertEquals(emptyList(), vm.state.value.identities?.single()?.hosts)
+    }
+
+    @Test
+    fun ipv6HostsWithAPortCanBeUnassigned() {
+        val (vm, manager, _) = identityViewModel()
+        val identity = manager.importFake(fingerprintA)
+        manager.assign("::1", 1966, identity.id)
+        vm.openIdentities()
+
+        val capsule = vm.state.value.identities!!.single().hosts.single()
+        assertEquals(IdentityHost("::1", 1966), capsule)
+        assertEquals("[::1]:1966", capsule.label)
+        assertEquals("example.org", IdentityHost("example.org", 1965).label)
+        assertEquals("example.org:1966", IdentityHost("example.org", 1966).label)
+
+        vm.unassignIdentity(capsule.host, capsule.port)
+        assertEquals(emptyList(), vm.state.value.identities?.single()?.hosts)
+        assertNull(manager.assignedTo("::1", 1966))
+    }
+
+    /** A store whose changes to assignments fail, to check that the page isn't reloaded after a failure. */
+    private class FailingAssignStore(private val delegate: InMemoryIdentityStore) : IdentityStore by delegate {
+        override fun assign(host: String, port: Int, id: String) = throw IllegalStateException("Disk full")
+        override fun unassign(host: String, port: Int) = throw IllegalStateException("Disk full")
+    }
+
+    @Test
+    fun aFailedAssignOrUnassignFromThePromptDoesNotReload() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val identities = InMemoryIdentityStore()
+            val manager = IdentityManager(FailingAssignStore(identities), FakeIdentityCodec())
+            val transport = IdentityRequiredTransport(identities)
+            val vm = BrowserViewModel(identityManager = manager, client = GeminiClient(transport))
+            val identity = manager.importFake(fingerprintA)
+            vm.open("gemini://example.org/")
+            advanceUntilIdle()
+            val requests = transport.presented.size
+
+            vm.useIdentity(identity.id)
+            advanceUntilIdle()
+            assertEquals("Disk full", vm.state.value.notice)
+            vm.unassignIdentityForPage()
+            advanceUntilIdle()
+
+            assertEquals(requests, transport.presented.size)
+            assertIs<PageState.ClientCertificateRequired>(vm.state.value.page)
+        } finally {
+            Dispatchers.resetMain()
+        }
     }
 
     @Test

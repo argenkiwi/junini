@@ -50,8 +50,18 @@ data class BrowserState(
     val identities: List<IdentityItem>? = null,
 )
 
-/** An [identity] and the hosts (`host` or `host:port`) it is assigned to. */
-data class IdentityItem(val identity: Identity, val hosts: List<String>)
+/** An [identity] and the capsules it is assigned to. */
+data class IdentityItem(val identity: Identity, val hosts: List<IdentityHost>)
+
+/** A capsule an identity is assigned to. Kept as host and port, not text, so IPv6 hosts stay unambiguous. */
+data class IdentityHost(val host: String, val port: Int) {
+    /** `host`, `host:port` for a non-default port, with IPv6 hosts in brackets. */
+    val label: String
+        get() {
+            val name = if (':' in host) "[$host]" else host
+            return if (port == GEMINI_DEFAULT_PORT) name else "$name:$port"
+        }
+}
 
 data class HistoryEntry(
     val url: Url,
@@ -235,8 +245,8 @@ class BrowserViewModel(
     /** Assigns [id] to the host behind a [PageState.ClientCertificateRequired] page and loads the page again. */
     fun useIdentity(id: String) {
         val page = _state.value.page as? PageState.ClientCertificateRequired ?: return
-        manageIdentities(null) { it.assign(page.host, page.port, id) }
-        load(page.url)
+        // Reloading after a failed change would only fetch the same rejection again and bury the notice.
+        if (manageIdentities(null) { it.assign(page.host, page.port, id) }) load(page.url)
     }
 
     /** Imports the identity in [texts], assigns it to the host behind a [PageState.ClientCertificateRequired] page and reloads. */
@@ -255,20 +265,20 @@ class BrowserViewModel(
     /** Stops using the rejected identity for the host behind a [PageState.ClientCertificateRequired] page. */
     fun unassignIdentityForPage() {
         val page = _state.value.page as? PageState.ClientCertificateRequired ?: return
-        manageIdentities(null) { it.unassign(page.host, page.port) }
-        load(page.url)
+        if (manageIdentities(null) { it.unassign(page.host, page.port) }) load(page.url)
     }
 
     private fun identityItems(): List<IdentityItem> {
         val manager = identityManager ?: return emptyList()
-        val hostsById = manager.assignments().entries
-            .groupBy({ it.value }, { (key, _) -> key.first.let { host -> if (key.second == GEMINI_DEFAULT_PORT) host else "$host:${key.second}" } })
-        return manager.identities().map { IdentityItem(it, hostsById[it.id].orEmpty().sorted()) }
+        val hostsById = manager.assignments().entries.groupBy({ it.value }, { (key, _) -> IdentityHost(key.first, key.second) })
+        val order = compareBy<IdentityHost>({ it.host }, { it.port })
+        return manager.identities().map { IdentityItem(it, hostsById[it.id].orEmpty().sortedWith(order)) }
     }
 
-    private fun manageIdentities(message: String?, action: (IdentityManager) -> Unit) {
-        val manager = identityManager ?: return
-        try {
+    /** Runs [action] and refreshes the identities screen. Returns false (with a notice) if it failed. */
+    private fun manageIdentities(message: String?, action: (IdentityManager) -> Unit): Boolean {
+        val manager = identityManager ?: return false
+        return try {
             action(manager)
             _state.update {
                 it.copy(
@@ -276,8 +286,10 @@ class BrowserViewModel(
                     notice = message ?: it.notice,
                 )
             }
+            true
         } catch (e: Exception) {
             _state.update { it.copy(notice = e.message ?: "Something went wrong with the identity") }
+            false
         }
     }
 

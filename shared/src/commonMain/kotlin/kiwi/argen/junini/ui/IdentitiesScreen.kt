@@ -27,7 +27,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import kiwi.argen.junini.gemini.GEMINI_DEFAULT_PORT
 import kiwi.argen.junini.gemini.formatFingerprint
 import kiwi.argen.junini.identity.IdentityFiles
 import kiwi.argen.junini.identity.MissingPart
@@ -169,13 +168,10 @@ private fun IdentityCard(
             if (item.hosts.isEmpty()) {
                 Text("Not assigned to any capsule", style = MaterialTheme.typography.bodySmall)
             }
-            item.hosts.forEach { host ->
+            item.hosts.forEach { capsule ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(host, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    TextButton(onClick = {
-                        val (name, port) = host.splitHostPort()
-                        onUnassign(name, port)
-                    }) { Text("Unassign") }
+                    Text(capsule.label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { onUnassign(capsule.host, capsule.port) }) { Text("Unassign") }
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -260,10 +256,3 @@ internal fun rememberIdentityImporter(files: IdentityFiles, onImport: (List<Stri
 }
 
 private fun String.toFileName(): String = replace(Regex("[^A-Za-z0-9._-]+"), "_").trim('_').ifEmpty { "identity" }
-
-/** Splits `host` or `host:port`, falling back to the Gemini default port. IPv6 hosts have more than one colon and keep it. */
-private fun String.splitHostPort(): Pair<String, Int> {
-    val index = lastIndexOf(':')
-    val port = if (index > 0 && indexOf(':') == index) substring(index + 1).toIntOrNull() else null
-    return if (port != null) substring(0, index) to port else this to GEMINI_DEFAULT_PORT
-}
