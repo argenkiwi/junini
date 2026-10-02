@@ -40,6 +40,13 @@ class GeminiUrlTest {
     }
 
     @Test
+    fun normalizesForComparison() {
+        assertEquals("gemini://example.org/", Url("gemini://Example.ORG:1965").normalized())
+        assertEquals("gemini://example.org/", Url("gemini://example.org/#top").normalized())
+        assertEquals("gemini://example.org:1966/a?q=1", Url("gemini://example.org:1966/a?q=1#x").normalized())
+    }
+
+    @Test
     fun resolvesOtherSchemesWithoutTouchingThem() {
         val url = resolveUrl(base, "https://example.com/page")!!
         assertFalse(url.isGemini)
