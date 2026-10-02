@@ -16,6 +16,9 @@ import kiwi.argen.junini.identity.JdkIdentityCodec
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
+        // Lets the bottom bar's colour reach the screen edge under 3-button navigation, rather than the
+        // system laying its own translucent scrim over it.
+        window.isNavigationBarContrastEnforced = false
         super.onCreate(savedInstanceState)
 
         val knownHostsStore = FileKnownHostsStore(File(filesDir, "known_hosts"))

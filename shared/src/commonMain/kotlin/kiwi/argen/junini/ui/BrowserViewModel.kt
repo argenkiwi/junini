@@ -40,6 +40,8 @@ data class BrowserState(
     val currentUrl: Url? = null,
     val page: PageState = PageState.Idle,
     val isLoading: Boolean = false,
+    /** Whether the load in progress reloads the current page (pull-to-refresh), rather than opening a new one. */
+    val isRefreshing: Boolean = false,
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
     /** Visited URLs matching [urlInput] while the user types, best match first. */
@@ -148,6 +150,13 @@ class BrowserViewModel(
         load(url)
     }
 
+    /** Loads the page being shown again, whatever the URL field now says. */
+    fun reload() {
+        val url = _state.value.currentUrl ?: return
+        if (_state.value.page is PageState.Input) return
+        load(url, refreshing = true)
+    }
+
     fun onLinkClick(href: String) {
         val base = _state.value.currentUrl ?: return
         val url = resolveUrl(base, href)
@@ -167,6 +176,7 @@ class BrowserViewModel(
                         urlInput = it.currentUrl?.toString().orEmpty(),
                         suggestions = emptyList(),
                         isLoading = false,
+                        isRefreshing = false,
                     )
                 }
             }
@@ -187,6 +197,7 @@ class BrowserViewModel(
                 currentUrl = previous.url,
                 page = previous.page,
                 isLoading = false,
+                isRefreshing = false,
                 canGoBack = backStack.isNotEmpty(),
                 canGoForward = forwardStack.isNotEmpty(),
             )
@@ -210,6 +221,7 @@ class BrowserViewModel(
                 currentUrl = next.url,
                 page = next.page,
                 isLoading = false,
+                isRefreshing = false,
                 canGoBack = backStack.isNotEmpty(),
                 canGoForward = forwardStack.isNotEmpty(),
             )
@@ -328,7 +340,7 @@ class BrowserViewModel(
             goBack()
         } else {
             _state.update {
-                it.copy(urlInput = "", suggestions = emptyList(), currentUrl = null, page = PageState.Idle, isLoading = false)
+                it.copy(urlInput = "", suggestions = emptyList(), currentUrl = null, page = PageState.Idle, isLoading = false, isRefreshing = false)
             }
         }
     }
@@ -347,12 +359,12 @@ class BrowserViewModel(
     }
 
     /** With [redactQuery] the query (a secret answer) is hidden everywhere the URL is shown or kept. */
-    private fun load(url: Url, redactQuery: Boolean = false) {
+    private fun load(url: Url, redactQuery: Boolean = false, refreshing: Boolean = false) {
         loadJob?.cancel()
         val previousUrl = _state.value.currentUrl
         val previousPage = _state.value.page
         val shownUrl = if (redactQuery) url.withoutQuery() else url
-        _state.update { it.copy(urlInput = shownUrl.toString(), suggestions = emptyList(), isLoading = true) }
+        _state.update { it.copy(urlInput = shownUrl.toString(), suggestions = emptyList(), isLoading = true, isRefreshing = refreshing) }
         loadJob = viewModelScope.launch {
             val result = try {
                 val response = client.fetch(url)
@@ -387,6 +399,7 @@ class BrowserViewModel(
                     currentUrl = finalUrl,
                     page = page,
                     isLoading = false,
+                    isRefreshing = false,
                     canGoBack = backStack.isNotEmpty(),
                     canGoForward = forwardStack.isNotEmpty(),
                 )

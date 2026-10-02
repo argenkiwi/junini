@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -78,7 +79,8 @@ fun PlainTextView(text: String, listState: LazyListState, contentPadding: Paddin
 @Composable
 fun MessageView(title: String, detail: String, contentPadding: PaddingValues) {
     Box(
-        modifier = Modifier.fillMaxSize().padding(contentPadding).padding(24.dp),
+        // Scrollable so a pull-to-refresh can start on it.
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(contentPadding).padding(24.dp),
         contentAlignment = Alignment.Center,
     ) {
         Surface(

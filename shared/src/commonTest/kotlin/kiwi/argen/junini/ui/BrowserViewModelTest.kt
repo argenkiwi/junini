@@ -219,6 +219,38 @@ class BrowserViewModelTest {
     }
 
     @Test
+    fun reloadReloadsTheCurrentPageNotTheEditedField() = runTest {
+        val testDispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(testDispatcher)
+        try {
+            val vm = createViewModel()
+            vm.onUrlInputChange("gemini://example.org/a")
+            vm.submitUrlInput()
+            advanceUntilIdle()
+            vm.onUrlInputChange("gemini://example.org/b")
+
+            vm.reload()
+            assertTrue(vm.state.value.isRefreshing)
+            advanceUntilIdle()
+
+            assertFalse(vm.state.value.isRefreshing)
+            assertFalse(vm.state.value.isLoading)
+            assertEquals(Url("gemini://example.org/a"), vm.state.value.currentUrl)
+            assertFalse(vm.state.value.canGoBack)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun reloadDoesNothingBeforeAnyPageLoaded() = runTest {
+        val vm = createViewModel()
+        vm.reload()
+        assertFalse(vm.state.value.isRefreshing)
+        assertFalse(vm.state.value.isLoading)
+    }
+
+    @Test
     fun errorPagePreservesBackNavigationToPreviousPage() = runTest {
         val testDispatcher = StandardTestDispatcher(testScheduler)
         Dispatchers.setMain(testDispatcher)
