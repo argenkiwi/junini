@@ -39,12 +39,13 @@ import kotlinx.coroutines.flow.first
 @Composable
 fun InputSheet(
     page: PageState.Input,
+    isLoading: Boolean,
     onSubmit: (String) -> Unit,
     onCancel: () -> Unit,
 ) {
     var text by remember(page) { mutableStateOf("") }
     val focusRequester = remember { FocusRequester() }
-    val submit = { if (text.isNotBlank()) onSubmit(text) }
+    val submit = { if (!isLoading && text.isNotBlank()) onSubmit(text) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     // The sheet lives in its own window, which can miss the keyboard's insets if the keyboard opens while
     // the window is still appearing and ends up drawn underneath it. Focus the field once the sheet has settled.
@@ -67,6 +68,7 @@ fun InputSheet(
                 value = text,
                 onValueChange = { text = it },
                 modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                enabled = !isLoading,
                 visualTransformation = if (page.sensitive) PasswordVisualTransformation() else VisualTransformation.None,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = if (page.sensitive) KeyboardType.Password else KeyboardType.Text,
@@ -80,7 +82,7 @@ fun InputSheet(
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             ) {
                 TextButton(onClick = onCancel) { Text("Cancel") }
-                Button(onClick = submit, enabled = text.isNotBlank()) { Text("Send") }
+                Button(onClick = submit, enabled = !isLoading && text.isNotBlank()) { Text("Send") }
             }
         }
     }

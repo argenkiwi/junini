@@ -863,4 +863,106 @@ class BrowserViewModelTest {
             Dispatchers.resetMain()
         }
     }
+
+    private class CountingTransport(private val responses: Map<String, String>) : GeminiTransport {
+        val requests = mutableListOf<String>()
+        override suspend fun fetch(host: String, port: Int, request: String): ByteArray {
+            val line = request.removeSuffix("\r\n")
+            requests += line
+            return (responses[line] ?: "51 Not found\r\n").encodeToByteArray()
+        }
+    }
+
+    @Test
+    fun secretAnswerNeverAppearsInUrlSuggestionsOrHistory() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val vm = createViewModel(
+                sampleResponses + mapOf(
+                    "gemini://example.org/pw" to "11 Password\r\n",
+                    "gemini://example.org/pw?hunter2" to "20 text/gemini\r\n# Secret page",
+                ),
+            )
+            vm.onUrlInputChange("gemini://example.org/pw")
+            vm.submitUrlInput()
+            advanceUntilIdle()
+            assertTrue(assertIs<PageState.Input>(vm.state.value.page).sensitive)
+
+            vm.submitInput("hunter2")
+            // While the answer is loading the URL bar already hides it.
+            assertEquals("gemini://example.org/pw", vm.state.value.urlInput)
+            advanceUntilIdle()
+
+            val page = assertIs<PageState.Gemtext>(vm.state.value.page)
+            assertEquals(Url("gemini://example.org/pw"), page.url)
+            assertEquals(Url("gemini://example.org/pw"), vm.state.value.currentUrl)
+            assertEquals("gemini://example.org/pw", vm.state.value.urlInput)
+
+            vm.onUrlInputChange("pw")
+            assertTrue(vm.state.value.suggestions.none { "hunter2" in it }, "suggestions: ${vm.state.value.suggestions}")
+            assertTrue(vm.state.value.suggestions.isEmpty(), "a page reached with a secret isn't recorded")
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun nonSecretAnswerStaysInTheUrl() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val vm = createViewModel(inputResponses)
+            vm.onUrlInputChange("gemini://example.org/ask")
+            vm.submitUrlInput()
+            advanceUntilIdle()
+            vm.submitInput("Ada Lovelace")
+            advanceUntilIdle()
+            assertEquals("gemini://example.org/ask?Ada%20Lovelace", vm.state.value.urlInput)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun cancellingWhileAnAnswerLoadsKeepsTheCancelledState() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val vm = createViewModel(inputResponses)
+            vm.onUrlInputChange("gemini://example.org/ask")
+            vm.submitUrlInput()
+            advanceUntilIdle()
+
+            vm.submitInput("Ada Lovelace")
+            assertTrue(vm.state.value.isLoading)
+            vm.cancelCertificateChange()
+            advanceUntilIdle()
+
+            assertEquals(PageState.Idle, vm.state.value.page)
+            assertFalse(vm.state.value.isLoading)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    @Test
+    fun submittingTwiceSendsTheAnswerOnce() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val transport = CountingTransport(inputResponses)
+            val vm = BrowserViewModel(client = GeminiClient(transport))
+            vm.onUrlInputChange("gemini://example.org/ask")
+            vm.submitUrlInput()
+            advanceUntilIdle()
+
+            vm.submitInput("Ada Lovelace")
+            vm.submitInput("Ada Lovelace")
+            advanceUntilIdle()
+
+            assertEquals(
+                listOf("gemini://example.org/ask", "gemini://example.org/ask?Ada%20Lovelace"),
+                transport.requests,
+            )
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
 }

@@ -78,4 +78,9 @@ class GeminiUrlTest {
         val url = Url("gemini://example.org/a?old=1#top")
         assertEquals("gemini://example.org/a?new", url.withQuery("new").toString())
     }
+
+    @Test
+    fun withoutQueryDropsQueryAndFragment() {
+        assertEquals("gemini://example.org/ask", Url("gemini://example.org/ask?secret#top").withoutQuery().toString())
+    }
 }

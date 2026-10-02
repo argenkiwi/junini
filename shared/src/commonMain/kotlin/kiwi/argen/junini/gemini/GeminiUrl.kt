@@ -47,6 +47,12 @@ fun Url.withQuery(input: String): Url {
     return Url("$base?${input.encodeURLParameter()}")
 }
 
+/** This URL without its query and fragment. */
+fun Url.withoutQuery(): Url = URLBuilder(this).apply {
+    fragment = ""
+    parameters.clear()
+}.build()
+
 val Url.isGemini: Boolean get() = protocol.name.equals(GEMINI_SCHEME, ignoreCase = true)
 
 /** The port to connect to: the one in the URL, or Gemini's default when none is given. */

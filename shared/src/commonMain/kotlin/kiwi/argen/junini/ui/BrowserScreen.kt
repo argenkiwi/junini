@@ -202,7 +202,7 @@ fun BrowserScreen(
                 )
             }
             (state.page as? PageState.Input)?.let { page ->
-                InputSheet(page = page, onSubmit = viewModel::submitInput, onCancel = viewModel::cancelCertificateChange)
+                InputSheet(page = page, isLoading = state.isLoading, onSubmit = viewModel::submitInput, onCancel = viewModel::cancelCertificateChange)
             }
             if (state.isLoading) {
                 LinearProgressIndicator(
